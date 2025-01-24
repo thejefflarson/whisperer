@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, Secret};
-use kube::api::{ListParams, ObjectMeta, Patch, PatchParams};
+use kube::api::{ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
 use kube::runtime::watcher::Config;
 use kube::runtime::Controller;
@@ -41,7 +41,7 @@ async fn reconcile(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error>
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
     // test invariant: that we don't have an ACTIVE_KEY label, I don' think this should happen
-    if labels.is_none() || labels.clone().unwrap().get(ACTIVE_KEY).is_none() {
+    if labels.is_none() || !labels.clone().unwrap().contains_key(ACTIVE_KEY) {
         return Err(Error::MissingLabel { name, namespace });
     }
     let client = &ctx.client;
@@ -61,7 +61,7 @@ async fn reconcile(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error>
 
     let difference = namespaces
         .difference(&wanted)
-        .map(|it| it.clone())
+        .cloned()
         .collect::<Vec<String>>();
     if !difference.is_empty() {
         let unk = difference.join(",");
@@ -145,7 +145,7 @@ mod test {
         assert!(items.len() == 1);
         println!("{:#?}", items);
         let data = Arc::new(Data { client });
-        let secret = Arc::new(items.get(0).unwrap().to_owned());
+        let secret = Arc::new(items.first().unwrap().to_owned());
         let _ = reconcile(secret, data).await.unwrap();
     }
 }
