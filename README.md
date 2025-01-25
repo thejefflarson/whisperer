@@ -10,7 +10,6 @@ It's 300 lines of code, most of which is handling edgecases, I'd love to know if
 Whelp, right now, maybe hold off? I'm a few days away from CICD and a helm chart, but when that's ready, here's how it works.
 
 Create some namespaces and a secret in a file called `sync.yaml`:
-
 ```yaml
 apiVersion: v1
 kind: Namespace
@@ -40,12 +39,10 @@ data:
   secret: dG90YWxseSBhIHN1cGVyIGR1cGVyIHNlY3JldCB5b3Ugc2hvdWxkbid0IHRlbGwgYW55b25lCg==
 ```
 
-In a file called `sync.yaml` and run:
-
+And run:
 `kubectl apply -f sync.yaml`
 
-You then can see that in the `target` and `target2` namespaces you have secrets that mirror the secret you created:
-
+And your secrets are sync accros namespaces! Look at the `target` and `target2` namespaces you have secrets that mirror the secret you created:
 ```
 $ kubectl get secrets --all-namespaces
 NAMESPACE     NAME                                  TYPE                DATA   AGE
@@ -61,7 +58,6 @@ NEAT-O! No more running `kubectl create secret github ...` in all your namespace
 ## Whelp, that's mildly interesting, how does it work?
 
 I'm glad you asked, the trick is in the labels and annotations on the secret itself:
-
 ```yaml
   labels:
     secret-syncer.jeffl.es/sync: "true"
@@ -72,7 +68,6 @@ I'm glad you asked, the trick is in the labels and annotations on the secret its
 The label `secret-syncer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in `secret-syncer.jeffl.es/namespaces`.
 
 There are a couple other niceties as well. You can delete a synced secret and it'll come right back:
-
 ```
 $ kubectl delete secret -n target sync
 secret "sync" deleted
@@ -86,7 +81,6 @@ target2       sync                                  Opaque              1      6
 ```
 
 You can also search for all your sources of synced secrets:
-
 ```
 $ kubectl get secrets -l "secret-syncer.jeffl.es/sync=true" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
@@ -94,7 +88,6 @@ source      sync   Opaque   1      10m
 ```
 
 Or search for "whispered" secrets (haha, great pun jeff):
-
 ```
 $ kubectl get secrets -l "secret-syncer.jeffl.es/mirror=true" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
@@ -103,7 +96,6 @@ target2     sync   Opaque   1      10m
 ```
 
 Or look for where a particular secrets are mirrored to:
-
 ```
 $ kubectl get secrets -l "secret-syncer.jeffl.es/name=sync,secret-syncer.jeffl.es/namespace=source" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
@@ -119,4 +111,13 @@ Yeah I know.
 
 ## Thanks, I hate it, but I'll use it.
 
-Cool! I really like you too!
+Cool! I really like you too!  But if it isn't your thing, delete the source secret and everything is gone:
+```
+$ kubectl delete secret -n source sync
+secret "sync" deleted
+$ kubectl get secrets --all-namespaces
+NAMESPACE     NAME                                  TYPE                DATA   AGE
+kube-system   k3d-test-server-0.node-password.k3s   Opaque              1      43m
+kube-system   k3s-serving                           kubernetes.io/tls   2      43m
+```
+Have a wonderful day!
