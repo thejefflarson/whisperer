@@ -1,8 +1,8 @@
-# whisperer.rs
+# whisperer
 A mostly dumb way to make sure every k8s namespace has your pull secrets.
 
 ## Ok, what is all this?
-**whisperer.rs** is a kubernetes operator that whispers a secret to another namespaces.
+**whisperer** is a kubernetes operator that whispers a secret to another namespaces.
 
 It's 300 lines of code, most of which is handling edgecases, I'd love to know if there are more I haven't thought of.
 
