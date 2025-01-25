@@ -20,12 +20,12 @@ use tracing::{error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-const ACTIVE_LABEL: &str = "secret-syncer.jeffl.es/sync";
-const NAMESPACE_ANNOTATION: &str = "secret-syncer.jeffl.es/namespaces";
-const MIRROR_LABEL: &str = "secret-syncer.jeffl.es/mirror";
-const NAME_LABEL: &str = "secret-syncer.jeffl.es/name";
-const NAMESPACE_LABEL: &str = "secret-syncer.jeffl.es/namespace";
-const FINALIZER: &str = "secret-syncer.jeffl.es/cleanup";
+const ACTIVE_LABEL: &str = "whisperer.jeffl.es/sync";
+const NAMESPACE_ANNOTATION: &str = "whisperer.jeffl.es/namespaces";
+const MIRROR_LABEL: &str = "whisperer.jeffl.es/mirror";
+const NAME_LABEL: &str = "whisperer.jeffl.es/name";
+const NAMESPACE_LABEL: &str = "whisperer.jeffl.es/namespace";
+const FINALIZER: &str = "whisperer.jeffl.es/cleanup";
 
 use thiserror::Error;
 #[derive(Error, Debug)]
@@ -54,7 +54,7 @@ struct Data {
 type NSSet = HashSet<String>;
 
 /// Returns a list of existing namespaces from a secret's namespace annotation:
-/// secret-syncer.jeffl.es/namespaces. It is an error to sync a secret without the namespace
+/// whisperer.jeffl.es/namespaces. It is an error to sync a secret without the namespace
 /// annotation. Unknown namespaces are ignored.
 async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet, Error> {
     let namespaces = Api::<Namespace>::all(client.clone())
@@ -98,7 +98,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
     let labels = secret.labels();
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
-    // test invariant: we don't have a secret-syncer.jeffl.es/sync label, strange! I don't think
+    // test invariant: we don't have a whisperer.jeffl.es/sync label, strange! I don't think
     // this should happen. But just in case we catch it.
     if !labels.contains_key(ACTIVE_LABEL) {
         return Err(Error::MissingLabel { name, namespace });
@@ -177,7 +177,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
             type_: secret.type_,
         };
         let patch = Patch::Apply(&dest);
-        api.patch(&name, &PatchParams::apply("secret-syncer.jeffl.es"), &patch)
+        api.patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
             .await
             .map_err(Error::Patch)?;
         info!("created mirror of {name} from {namespace} to {ns}");
@@ -262,7 +262,7 @@ async fn main() -> anyhow::Result<()> {
         .with_id_generator(RandomIdGenerator::default())
         .with_batch_exporter(exporter, runtime::Tokio)
         .build();
-    let otel = tracing_opentelemetry::layer().with_tracer(tracer.tracer("secret-syncer"));
+    let otel = tracing_opentelemetry::layer().with_tracer(tracer.tracer("whisperer"));
     let filter = EnvFilter::from_default_env();
     tracing_subscriber::registry()
         .with(otel)
@@ -353,7 +353,7 @@ mod test {
         let _ = api
             .patch(
                 "sync",
-                &PatchParams::apply("secret-syncer.jeffl.es"),
+                &PatchParams::apply("whisperer.jeffl.es"),
                 &Patch::Apply(secret_patch.clone()),
             )
             .await
@@ -384,7 +384,7 @@ mod test {
         let _ = patch
             .patch(
                 "sync",
-                &PatchParams::apply("secret-syncer.jeffl.es"),
+                &PatchParams::apply("whisperer.jeffl.es"),
                 &Patch::Apply(secret_patch),
             )
             .await
