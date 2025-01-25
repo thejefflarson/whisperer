@@ -119,7 +119,7 @@ NEAT-O KEEN-O!
 
 ## Yeah, what's the monitoring sitch like?
 
-Well, it has [tracing](https://docs.rs/tracing/latest/tracing/) so all the environment switches work there, and bonus: it also strives to have [opentelemetry](https://opentelemetry.io/) bells and whistles, but honestly I only understand like 5% of that stuff.
+Well, it has [tracing](https://docs.rs/tracing/latest/tracing/) so all the environment switches work there, and bonus: it also strives to have [opentelemetry](https://opentelemetry.io/) bells and whistles, but honestly I only understand like 5% of that stuff. I guess I'll add the prometheus stuff, idk, this is pretty lightweight. 
 
 ## Ok, but like namespaces are supposed to be independent.
 
