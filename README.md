@@ -1,5 +1,5 @@
 # whisperer.rs
-A mostly dumb way to make sure every k8s namespace has your pull secrets.z
+A mostly dumb way to make sure every k8s namespace has your pull secrets.
 
 ## Ok, what is all this?
 **whisperer.rs** is a kubernetes operator that mirrors a secret across namespaces.
