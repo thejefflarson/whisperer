@@ -42,7 +42,7 @@ data:
 And run:
 `kubectl apply -f sync.yaml`
 
-Hot diggedy dog, your secrets are sync accrossed namespaces! 
+Hot diggedy dog, your secrets are synced accross namespaces! 
 
 Just Look at the `target` and `target2` namespaces! You have secrets that mirror the secret you created:
 ```
