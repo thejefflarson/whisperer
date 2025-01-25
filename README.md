@@ -77,7 +77,7 @@ I'm glad you asked, the trick is in the labels and annotations on the secret its
     whisperer.jeffl.es/namespaces: "target,target2,missing"
 ```
 
-The label `whisperer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in the annotation `whisperer.jeffl.es/namespaces`.
+The label `whisperer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in the annotation `whisperer.jeffl.es/namespaces`. (BTW, **whisperer** will complain about the `missing` namespace here, but if you create it, it'll eventually catch up, like in 300 seconds or so. That's a lot, but maybe that's on you for whispering to an imaginary friend? You do you.)
 
 There are a couple other niceties as well. You can delete a synced secret and it'll come right back:
 ```
