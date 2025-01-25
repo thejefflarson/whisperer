@@ -199,18 +199,18 @@ async fn delete(name: String, namespace: String, ctx: Arc<Data>) -> Result<()> {
 /// Does three things:
 /// 1. Delete the `secret.`
 /// 2. Delete child secrets in namespaces in the secret's annotation.
-/// 3. Delete secrets that reference the `secret` but aren't in the annotation's namespace list.
+/// 3. Delete secrets that reference the `secret` but aren't in the annotation's namespace list, just in case.
 async fn cleanup(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
     delete(name.clone(), namespace.clone(), ctx.clone()).await?;
-    // First we delete the secrets in the namespaces listed on the secret
+    // First we delete the secrets in the namespaces listed on the secret.
     let union = secret_namespaces(secret, ctx.client.clone()).await?;
     for ns in union.clone() {
         delete(name.clone(), ns, ctx.clone()).await?;
     }
 
-    // And just to be absolutely sure we delete any remaining that have our child labels on them,
+    // And just to be absolutely sure we delete any remaining secreats that have our child labels on them,
     // but aren't in the secrets namespace list. This may only happen if there's a race where a
     // synced secret namespaces have changed and it's then immediately deleted (even then it would
     // be real tricky to get right), but it's worth being careful here.
