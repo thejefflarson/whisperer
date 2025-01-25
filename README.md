@@ -126,4 +126,4 @@ Have a wonderful day!
 
 ## One more thing: I feel like other folks have made this.
 
-Sure, but this is how I wanted it to work. Maybe you do to?
+Sure, but this is how I wanted it to work. Maybe you do too?
