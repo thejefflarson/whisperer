@@ -22,7 +22,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const ACTIVE_LABEL: &str = "whisperer.jeffl.es/sync";
 const NAMESPACE_ANNOTATION: &str = "whisperer.jeffl.es/namespaces";
-const MIRROR_LABEL: &str = "whisperer.jeffl.es/mirror";
+const WHISPER_LABEL: &str = "whisperer.jeffl.es/whisper";
 const NAME_LABEL: &str = "whisperer.jeffl.es/name";
 const NAMESPACE_LABEL: &str = "whisperer.jeffl.es/namespace";
 const FINALIZER: &str = "whisperer.jeffl.es/cleanup";
@@ -92,7 +92,7 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
 /// The main reconcile function. The algorithm here is simple:
 /// 1. If the secret's list of target namespaces does not include a namespace but there are secrets
 ///    in that namespace with child labels, delete those secrets.
-/// 2. Loop through the namespaces listed in the secret's target annotation and mirror secrets
+/// 2. Loop through the namespaces listed in the secret's target annotation and whisper secrets
 ///    from the provided parent secret.
 async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
     let labels = secret.labels();
@@ -148,7 +148,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
             .collect::<BTreeMap<String, String>>();
         labels.insert(NAMESPACE_LABEL.to_string(), namespace.clone());
         labels.insert(NAME_LABEL.to_string(), name.clone());
-        labels.insert(MIRROR_LABEL.to_string(), "true".to_string());
+        labels.insert(WHISPER_LABEL.to_string(), "true".to_string());
         let annotations = secret
             .annotations()
             .clone()
@@ -180,7 +180,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
         api.patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
             .await
             .map_err(Error::Patch)?;
-        info!("created mirror of {name} from {namespace} to {ns}");
+        info!("created whisper of {name} from {namespace} to {ns}");
     }
 
     Ok(Action::requeue(Duration::from_secs(300)))
@@ -218,7 +218,7 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
     let secrets = api
         .list(&ListParams {
             label_selector: Some(format!(
-                "{MIRROR_LABEL}=true,{NAME_LABEL}={},{NAMESPACE_LABEL}={}",
+                "{WHISPER_LABEL}=true,{NAME_LABEL}={},{NAMESPACE_LABEL}={}",
                 name.clone(),
                 namespace.clone()
             )),
@@ -273,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .expect("could not connect to k8s");
     let root = Config::default().labels(&format!("{ACTIVE_LABEL}=true"));
-    let related = Config::default().labels(&format!("{MIRROR_LABEL}=true"));
+    let related = Config::default().labels(&format!("{WHISPER_LABEL}=true"));
     let api = Api::<Secret>::all(client.clone());
     info!("watching secrets with label {ACTIVE_LABEL}");
     Controller::new(api.clone(), root)
@@ -295,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
-    use super::{apply, cleanup, Data, ACTIVE_LABEL, MIRROR_LABEL, NAMESPACE_ANNOTATION};
+    use super::{apply, cleanup, Data, ACTIVE_LABEL, NAMESPACE_ANNOTATION, WHISPER_LABEL};
     use k8s_openapi::{
         api::core::v1::{Namespace, Secret},
         ByteString,
@@ -368,11 +368,11 @@ mod test {
 
         let secret = Arc::new(items.first().unwrap().to_owned());
         let _ = apply(secret.clone(), data.clone()).await.unwrap();
-        let mirror_params = ListParams {
-            label_selector: format!("{MIRROR_LABEL}=true").into(),
+        let whisper_params = ListParams {
+            label_selector: format!("{WHISPER_LABEL}=true").into(),
             ..Default::default()
         };
-        let items = api.list(&mirror_params).await.unwrap().items;
+        let items = api.list(&whisper_params).await.unwrap().items;
         assert_eq!(items.len(), 2, "secret is synced");
 
         let patch = Api::<Secret>::namespaced(client, "source");
@@ -391,7 +391,7 @@ mod test {
             .unwrap();
         let secret = Arc::new(patch.get("sync").await.unwrap());
         let _ = apply(secret.clone(), data.clone()).await.unwrap();
-        let items = api.list(&mirror_params).await.unwrap().items;
+        let items = api.list(&whisper_params).await.unwrap().items;
         assert_eq!(
             items.len(),
             1,
@@ -401,7 +401,7 @@ mod test {
         let _ = cleanup(secret, data).await.unwrap();
         let items = api.list(&lp).await.unwrap().items;
         assert_eq!(items.len(), 0, "secret is removed");
-        let items = api.list(&mirror_params).await.unwrap().items;
+        let items = api.list(&whisper_params).await.unwrap().items;
         assert_eq!(
             items.len(),
             0,
