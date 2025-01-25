@@ -89,6 +89,11 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         .collect::<NSSet>())
 }
 
+/// The main reconcile function. The algorithm here is simple:
+/// 1. If the secret's list of target namespaces does not include a namespace but there are secrets
+///    in that namespace with child labels, delete those secrets.
+/// 2. Loop through the namespaces listed in the secret's target annotation and mirror secrets
+///    from the provided parent secret.
 async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
     let labels = secret.labels();
     let name = secret.name_any();
@@ -191,14 +196,41 @@ async fn delete(name: String, namespace: String, ctx: Arc<Data>) -> Result<()> {
     Ok(())
 }
 
+/// Does three things:
+/// 1. Delete the `secret.`
+/// 2. Delete child secrets in namespaces in the secret's annotation.
+/// 3. Delete secrets that reference the `secret` but aren't in the annotation's namespace list.
 async fn cleanup(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
-    delete(name.clone(), namespace, ctx.clone()).await?;
-
+    delete(name.clone(), namespace.clone(), ctx.clone()).await?;
+    // First we delete the secrets in the namespaces listed on the secret
     let union = secret_namespaces(secret, ctx.client.clone()).await?;
-    for ns in union {
+    for ns in union.clone() {
         delete(name.clone(), ns, ctx.clone()).await?;
+    }
+
+    // And just to be absolutely sure we delete any remaining that have our child labels on them,
+    // but aren't in the secrets namespace list. This may only happen if there's a race where a
+    // synced secret namespaces have changed and it's then immediately deleted (even then it would
+    // be real tricky to get right), but it's worth being careful here.
+    let api: Api<Secret> = Api::<Secret>::all(ctx.client.clone());
+    let secrets = api
+        .list(&ListParams {
+            label_selector: Some(format!(
+                "{MIRROR_LABEL}=true,{NAME_LABEL}={},{NAMESPACE_LABEL}={}",
+                name.clone(),
+                namespace.clone()
+            )),
+            ..Default::default()
+        })
+        .await
+        .map_err(Error::ListSecrets)?;
+    for secret in secrets {
+        let namespace = secret.namespace().unwrap_or(String::from(""));
+        if !union.contains(&namespace) {
+            delete(secret.name_any(), namespace, ctx.clone()).await?;
+        }
     }
     Ok(Action::await_change())
 }
@@ -326,12 +358,14 @@ mod test {
             )
             .await
             .unwrap();
+
         let api = Api::<Secret>::all(client.clone());
         let items = api.list(&lp).await.unwrap().items;
         assert!(items.len() == 1, "secret created");
         let data = Arc::new(Data {
             client: client.clone(),
         });
+
         let secret = Arc::new(items.first().unwrap().to_owned());
         let _ = apply(secret.clone(), data.clone()).await.unwrap();
         let mirror_params = ListParams {
@@ -340,6 +374,7 @@ mod test {
         };
         let items = api.list(&mirror_params).await.unwrap().items;
         assert_eq!(items.len(), 2, "secret is synced");
+
         let patch = Api::<Secret>::namespaced(client, "source");
         let mut secret_patch = secret_patch.clone();
         secret_patch.metadata.annotations = Some(BTreeMap::from([(
@@ -354,7 +389,6 @@ mod test {
             )
             .await
             .unwrap();
-
         let secret = Arc::new(patch.get("sync").await.unwrap());
         let _ = apply(secret.clone(), data.clone()).await.unwrap();
         let items = api.list(&mirror_params).await.unwrap().items;
@@ -363,11 +397,17 @@ mod test {
             1,
             "child secret is removed when namespace is removed"
         );
+
         let _ = cleanup(secret, data).await.unwrap();
         let items = api.list(&lp).await.unwrap().items;
         assert_eq!(items.len(), 0, "secret is removed");
         let items = api.list(&mirror_params).await.unwrap().items;
-        assert_eq!(items.len(), 0, "child secrets are removed");
+        assert_eq!(
+            items.len(),
+            0,
+            "child secrets is removed when parent is removed"
+        );
+
         for ns in namespaces {
             nsapi.delete(ns, &DeleteParams::default()).await.unwrap();
         }
