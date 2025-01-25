@@ -39,6 +39,16 @@ data:
   secret: dG90YWxseSBhIHN1cGVyIGR1cGVyIHNlY3JldCB5b3Ugc2hvdWxkbid0IHRlbGwgYW55b25lCg==
 ```
 
+Boot up a k3ds cluster:
+```
+$ k3d cluster create test
+```
+
+Start the operator:
+```
+$ cargo run
+```
+
 And run:
 `kubectl apply -f sync.yaml`
 
@@ -106,6 +116,10 @@ target2     sync   Opaque   1      12m
 ```
 
 NEAT-O KEEN-O!
+
+## Yeah, what's the monitoring sitch like?
+
+Well, it has [tracing](https://docs.rs/tracing/latest/tracing/) so all the environment switches work there, and bonus: it also strives to have [opentelemetry](https://opentelemetry.io/) bells and whistles, but honestly I only understand like 5% of that stuff.
 
 ## Ok, but like namespaces are supposed to be independent.
 
