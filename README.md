@@ -1,13 +1,12 @@
 # whisperer.rs
-## A mostly dumb way to make sure every k8s namespace has your pull secrets
----
+A mostly dumb way to make sure every k8s namespace has your pull secrets
 
-### Ok, what is all this?
+## Ok, what is all this?
 **whisperer.rs** is a kubernetes operator that mirrors a secret across namespaces.
 
 It's 300 lines of code, most of which is handling edgecases, I'd love to know if there are more I haven't thought of.
 
-### Cool so how do I use it?
+## Cool so how do I use it?
 Whelp, right now, maybe hold off? I'm a few days away from CICD and a helm chart, but when that's ready, here's how it works.
 
 Create some namespaces and a secret in a file called `sync.yaml`:
@@ -59,7 +58,7 @@ target2       sync                                  Opaque              1      2
 
 NEAT-O! No more running `kubectl create secret github ...` in all your namespaces!
 
-### Whelp, that's mildly interesting, how does it work?
+## Whelp, that's mildly interesting, how does it work?
 
 I'm glad you asked, the trick is in the labels and annotations on the secret itself:
 
@@ -114,10 +113,10 @@ target2     sync   Opaque   1      12m
 
 NEAT-O KEEN-O!
 
-### Ok, but like namespaces are supposed to be independent.
+## Ok, but like namespaces are supposed to be independent.
 
 Yeah I know.
 
-### Thanks, I hate it, but I'll use it.
+## Thanks, I hate it, but I'll use it.
 
 Cool! I really like you too!
