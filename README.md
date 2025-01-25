@@ -77,7 +77,7 @@ I'm glad you asked, the trick is in the labels and annotations on the secret its
     secret-syncer.jeffl.es/namespaces: "target,target2,missing"
 ```
 
-The label `secret-syncer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in `secret-syncer.jeffl.es/namespaces`.
+The label `secret-syncer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in the annotation `secret-syncer.jeffl.es/namespaces`.
 
 There are a couple other niceties as well. You can delete a synced secret and it'll come right back:
 ```
