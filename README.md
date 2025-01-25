@@ -2,7 +2,7 @@
 A mostly dumb way to make sure every k8s namespace has your pull secrets.
 
 ## Ok, what is all this?
-**whisperer.rs** is a kubernetes operator that mirrors a secret across namespaces.
+**whisperer.rs** is a kubernetes operator that whispers a secret to another namespaces.
 
 It's 300 lines of code, most of which is handling edgecases, I'd love to know if there are more I haven't thought of.
 
@@ -101,13 +101,13 @@ source      sync   Opaque   1      10m
 
 Or search for "whispered" secrets (haha, great pun jeff):
 ```
-$ kubectl get secrets -l "secret-syncer.jeffl.es/mirror=true" --all-namespaces
+$ kubectl get secrets -l "secret-syncer.jeffl.es/whisper=true" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
 target      sync   Opaque   1      3m57s
 target2     sync   Opaque   1      10m
 ```
 
-Or look for where a particular secret is mirrored to:
+Or look for where a particular secret is whispered to:
 ```
 $ kubectl get secrets -l "secret-syncer.jeffl.es/name=sync,secret-syncer.jeffl.es/namespace=source" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
