@@ -32,9 +32,9 @@ metadata:
   name: sync
   namespace: source
   labels:
-    secret-syncer.jeffl.es/sync: "true"
+    whisperer.jeffl.es/sync: "true"
   annotations:
-    secret-syncer.jeffl.es/namespaces: "target,target2,missing"
+    whisperer.jeffl.es/namespaces: "target,target2,missing"
 data:
   secret: dG90YWxseSBhIHN1cGVyIGR1cGVyIHNlY3JldCB5b3Ugc2hvdWxkbid0IHRlbGwgYW55b25lCg==
 ```
@@ -72,12 +72,12 @@ NEAT-O! No more running `kubectl create secret github ...` in all your namespace
 I'm glad you asked, the trick is in the labels and annotations on the secret itself:
 ```yaml
   labels:
-    secret-syncer.jeffl.es/sync: "true"
+    whisperer.jeffl.es/sync: "true"
   annotations:
-    secret-syncer.jeffl.es/namespaces: "target,target2,missing"
+    whisperer.jeffl.es/namespaces: "target,target2,missing"
 ```
 
-The label `secret-syncer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in the annotation `secret-syncer.jeffl.es/namespaces`.
+The label `whisperer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in the annotation `whisperer.jeffl.es/namespaces`.
 
 There are a couple other niceties as well. You can delete a synced secret and it'll come right back:
 ```
@@ -94,14 +94,14 @@ target2       sync                                  Opaque              1      6
 
 You can also search for all your sources of synced secrets:
 ```
-$ kubectl get secrets -l "secret-syncer.jeffl.es/sync=true" --all-namespaces
+$ kubectl get secrets -l "whisperer.jeffl.es/sync=true" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
 source      sync   Opaque   1      10m
 ```
 
 Or search for "whispered" secrets (haha, great pun jeff):
 ```
-$ kubectl get secrets -l "secret-syncer.jeffl.es/whisper=true" --all-namespaces
+$ kubectl get secrets -l "whisperer.jeffl.es/whisper=true" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
 target      sync   Opaque   1      3m57s
 target2     sync   Opaque   1      10m
@@ -109,7 +109,7 @@ target2     sync   Opaque   1      10m
 
 Or look for where a particular secret is whispered to:
 ```
-$ kubectl get secrets -l "secret-syncer.jeffl.es/name=sync,secret-syncer.jeffl.es/namespace=source" --all-namespaces
+$ kubectl get secrets -l "whisperer.jeffl.es/name=sync,whisperer.jeffl.es/namespace=source" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
 target      sync   Opaque   1      5m52s
 target2     sync   Opaque   1      12m
