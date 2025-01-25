@@ -26,6 +26,6 @@ metadata:
   labels:
     secret-syncer.jeffl.es/sync: "true"
   annotations:
-    secret-syncer.jeffl.es/namespaces: "target,target2"
+    secret-syncer.jeffl.es/namespaces: "target,target2,missing"
 data:
   secret: c2VjcmV0LW1vcmUK

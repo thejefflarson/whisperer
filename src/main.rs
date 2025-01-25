@@ -4,41 +4,47 @@ use std::sync::Arc;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams};
-use kube::runtime::controller::Action;
+use kube::runtime::controller::{Action, Error as RuntimeError};
 use kube::runtime::finalizer::Event;
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config;
 
 use kube::runtime::{finalizer, Controller};
 use kube::{Api, Client, ResourceExt};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::SpanExporter;
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::trace::{RandomIdGenerator, TracerProvider};
+use opentelemetry_sdk::{resource, runtime};
 use tokio::time::Duration;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const ACTIVE_LABEL: &str = "secret-syncer.jeffl.es/sync";
 const NAMESPACE_ANNOTATION: &str = "secret-syncer.jeffl.es/namespaces";
-const MIRRORED_LABEL: &str = "secret-syncer.jeffl.es/mirror";
+const MIRROR_LABEL: &str = "secret-syncer.jeffl.es/mirror";
+const NAME_LABEL: &str = "secret-syncer.jeffl.es/name";
+const NAMESPACE_LABEL: &str = "secret-syncer.jeffl.es/namespace";
 const FINALIZER: &str = "secret-syncer.jeffl.es/cleanup";
 
 use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Could not retrieve namespaces: {0}")]
-    GetNamespacesFailed(#[source] kube::Error),
+    ListNamespaces(#[source] kube::Error),
+    #[error("Could not retrieve secrets: {0}")]
+    ListSecrets(#[source] kube::Error),
     #[error("Could not find label {ACTIVE_LABEL} for secret {name} in namespace {namespace}")]
     MissingLabel { name: String, namespace: String },
     #[error("Could not find destination annotation for secret {name} in namespace {namespace}")]
     MissingDestinationAnnotation { name: String, namespace: String },
     #[error("Could not patch secret: {0}")]
-    PatchError(#[source] kube::Error),
+    Patch(#[source] kube::Error),
     #[error("Could not delete secret: {0}")]
-    DeleteError(#[source] kube::Error),
+    Delete(#[source] kube::Error),
     #[error("Could not apply finalizers: {0}")]
-    FinalizerError(#[source] Box<dyn std::error::Error + Send>),
+    Finalizer(#[source] Box<dyn std::error::Error + Send>),
 }
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -48,11 +54,14 @@ struct Data {
 
 type NSSet = HashSet<String>;
 
+/// Returns a list of existing namespaces from a secret's namespace annotation:
+/// secret-syncer.jeffl.es/namespaces. It is an error to sync a secret without the namespace
+/// annotation. Unknown namespaces are ignored.
 async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet, Error> {
     let namespaces = Api::<Namespace>::all(client.clone())
         .list(&ListParams::default())
         .await
-        .map_err(Error::GetNamespacesFailed)?
+        .map_err(Error::ListNamespaces)?
         .iter()
         .map(|ns| ns.name_any())
         .collect::<NSSet>();
@@ -62,7 +71,7 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
     } else {
         let name = secret.name_any();
         let namespace = secret.namespace().unwrap_or(String::from(""));
-        warn!("missing namespace annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}', not syncing");
+        error!("missing namespace annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}', not syncing");
         return Err(Error::MissingDestinationAnnotation { name, namespace });
     };
     let difference = wanted
@@ -85,23 +94,57 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
     let labels = secret.labels();
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
-    // test invariant: that we don't have an ACTIVE_KEY label, I don't think this should happen
+    // test invariant: we don't have a secret-syncer.jeffl.es/sync label, strange! I don't think
+    // this should happen. But just in case we catch it.
     if !labels.contains_key(ACTIVE_LABEL) {
         return Err(Error::MissingLabel { name, namespace });
     }
+
+    info!("reconciling {name} in {namespace}");
+
     let client = &ctx.client;
     let intersection = secret_namespaces(secret.clone(), client.clone()).await?;
+
+    // If our list of namespaces has changed remove the old orphaned secrets.
+    let lp = ListParams {
+        label_selector: Some(format!("{NAMESPACE_LABEL}={namespace},{NAME_LABEL}={name}")),
+        ..Default::default()
+    };
+    let api = Api::<Secret>::all(client.clone());
+    let orphans = api.list(&lp).await.map_err(Error::ListSecrets)?;
+    // An orphan is a Secret that matches our source name, but isn't in our namespace list.
+    // We delete it here.
+    let orphans = orphans.iter().filter(|it| {
+        it.name_any() == name && !intersection.contains(&it.namespace().unwrap_or(String::from("")))
+    });
+    for orphan in orphans {
+        let namespace = orphan.namespace().unwrap_or(String::from(""));
+        info!("namespace {namespace} is not in {NAMESPACE_LABEL} on {name}, deleting child secret");
+        delete(
+            orphan.name_any(),
+            // this shouldn't be blank, but making the compiler happy.
+            namespace,
+            ctx.clone(),
+        )
+        .await?;
+    }
+
+    // Patch and create new objects, this might happen multiple times, but we don't care because it
+    // is idempotent
     for ns in intersection {
         let api: Api<Secret> = Api::namespaced(client.clone(), &ns);
         let secret = (*secret).clone();
         let meta = secret.metadata.clone();
+        // I could an argument to see not syncing labels and annotations.
         let mut labels = labels
             .clone()
             .iter()
             .filter(|it| it.0 != ACTIVE_LABEL)
             .map(|it| (it.0.to_owned(), it.1.to_owned()))
             .collect::<BTreeMap<String, String>>();
-        labels.insert(MIRRORED_LABEL.to_string(), "true".to_string());
+        labels.insert(NAMESPACE_LABEL.to_string(), namespace.clone());
+        labels.insert(NAME_LABEL.to_string(), name.clone());
+        labels.insert(MIRROR_LABEL.to_string(), "true".to_string());
         let annotations = secret
             .annotations()
             .clone()
@@ -109,13 +152,16 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
             .filter(|it| it.0 != NAMESPACE_ANNOTATION)
             .map(|it| (it.0.to_owned(), it.1.to_owned()))
             .collect::<BTreeMap<String, String>>();
+        let finalizers = meta
+            .finalizers
+            .map(|it| it.into_iter().filter(|it| it != FINALIZER).collect());
         let dest = Secret {
             data: secret.data,
             immutable: secret.immutable,
             metadata: ObjectMeta {
                 annotations: Some(annotations),
                 deletion_grace_period_seconds: meta.deletion_grace_period_seconds,
-                finalizers: meta.finalizers,
+                finalizers,
                 generate_name: meta.generate_name,
                 labels: Some(labels),
                 name: meta.name,
@@ -129,9 +175,10 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
         let patch = Patch::Apply(&dest);
         api.patch(&name, &PatchParams::apply("secret-syncer.jeffl.es"), &patch)
             .await
-            .map_err(Error::PatchError)?;
+            .map_err(Error::Patch)?;
         info!("created mirror of {name} from {namespace} to {ns}");
     }
+
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
@@ -139,7 +186,7 @@ async fn delete(name: String, namespace: String, ctx: Arc<Data>) -> Result<()> {
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
     api.delete(&name, &DeleteParams::default())
         .await
-        .map_err(Error::DeleteError)?
+        .map_err(Error::Delete)?
         .map_left(|_| info!("deleting secret {name} in {namespace}"))
         .map_right(|_| info!("deleted secret {name} in {namespace}"));
     Ok(())
@@ -148,11 +195,12 @@ async fn delete(name: String, namespace: String, ctx: Arc<Data>) -> Result<()> {
 async fn cleanup(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
+    delete(name.clone(), namespace, ctx.clone()).await?;
+
     let union = secret_namespaces(secret, ctx.client.clone()).await?;
     for ns in union {
         delete(name.clone(), ns, ctx.clone()).await?;
     }
-    delete(name, namespace, ctx.clone()).await?;
     Ok(Action::await_change())
 }
 
@@ -168,7 +216,7 @@ async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
         }
     })
     .await
-    .map_err(|e| Error::FinalizerError(Box::new(e)))
+    .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
 fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Data>) -> Action {
@@ -180,26 +228,33 @@ fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Data>) -> Action {
 async fn main() -> anyhow::Result<()> {
     let exporter = SpanExporter::builder().with_tonic().build().unwrap();
     let tracer = TracerProvider::builder()
-        .with_simple_exporter(exporter)
+        .with_id_generator(RandomIdGenerator::default())
+        .with_batch_exporter(exporter, runtime::Tokio)
         .build();
-    opentelemetry::global::set_tracer_provider(tracer.clone());
-    let otel = OpenTelemetryLayer::new(tracer.tracer("secret-syncer"));
+    let otel = tracing_opentelemetry::layer().with_tracer(tracer.tracer("secret-syncer"));
     let filter = EnvFilter::from_default_env();
     tracing_subscriber::registry()
         .with(otel)
         .with(fmt::layer().with_filter(filter))
         .init();
+
     let client = Client::try_default()
         .await
         .expect("could not connect to k8s");
-    let watcher = Config::default().labels(&format!("{ACTIVE_LABEL}=true"));
+    let root = Config::default().labels(&format!("{ACTIVE_LABEL}=true"));
+    let related = Config::default().labels(&format!("{MIRROR_LABEL}=true"));
     let api = Api::<Secret>::all(client.clone());
     info!("watching secrets with label {ACTIVE_LABEL}");
-    Controller::new(api, watcher)
+    Controller::new(api.clone(), root)
+        .watches(api, related, |secret| {
+            let ns = secret.labels().get(NAMESPACE_LABEL)?;
+            Some(ObjectRef::new(&secret.name_any()).within(ns))
+        })
         .run(dispatcher, error, Arc::new(Data { client }))
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!("reconciled {:?}", o),
+                Err(RuntimeError::ObjectNotFound(_)) => info!("object already deleted"),
                 Err(e) => warn!("reconcile failed: {}", e),
             }
         })
@@ -209,11 +264,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
-    use std::{collections::BTreeMap, sync::Arc};
-
-    use crate::NAMESPACE_ANNOTATION;
-
-    use super::{apply, cleanup, Data, ACTIVE_LABEL};
+    use super::{apply, cleanup, Data, ACTIVE_LABEL, MIRROR_LABEL, NAMESPACE_ANNOTATION};
     use k8s_openapi::{
         api::core::v1::{Namespace, Secret},
         ByteString,
@@ -222,6 +273,7 @@ mod test {
         api::{DeleteParams, ListParams, ObjectMeta, PostParams},
         Api, Client,
     };
+    use std::{collections::BTreeMap, sync::Arc};
 
     #[tokio::test]
     #[ignore = "uses k8s api"]
@@ -272,13 +324,23 @@ mod test {
         )
         .await
         .unwrap();
+        let api = Api::<Secret>::all(client.clone());
         let items = api.list(&lp).await.unwrap().items;
         assert!(items.len() == 1);
         let data = Arc::new(Data { client });
         let secret = Arc::new(items.first().unwrap().to_owned());
         let _ = apply(secret.clone(), data.clone()).await.unwrap();
+        let mirror_params = ListParams {
+            label_selector: format!("{MIRROR_LABEL}=true").into(),
+            ..Default::default()
+        };
+        let items = api.list(&mirror_params).await.unwrap().items;
+        assert_eq!(items.len(), 2);
         let _ = cleanup(secret, data).await.unwrap();
-
+        let items = api.list(&lp).await.unwrap().items;
+        assert_eq!(items.len(), 0);
+        let items = api.list(&mirror_params).await.unwrap().items;
+        assert_eq!(items.len(), 0);
         for ns in namespaces {
             nsapi.delete(ns, &DeleteParams::default()).await.unwrap();
         }
