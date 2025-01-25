@@ -1583,25 +1583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "secret-syncer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum 0.8.1",
- "futures",
- "k8s-openapi",
- "kube",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "thiserror 2.0.11",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "security-framework"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2233,6 +2214,25 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "whisper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.1",
+ "futures",
+ "k8s-openapi",
+ "kube",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "thiserror 2.0.11",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
 ]
 
 [[package]]

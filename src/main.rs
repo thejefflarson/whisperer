@@ -28,6 +28,7 @@ const NAMESPACE_LABEL: &str = "whisperer.jeffl.es/namespace";
 const FINALIZER: &str = "whisperer.jeffl.es/cleanup";
 
 use thiserror::Error;
+use whisper::server::serve;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Could not retrieve namespaces: {0}")]
@@ -255,6 +256,36 @@ fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Data>) -> Action {
     Action::requeue(Duration::from_secs(1))
 }
 
+async fn health() -> &'static str {
+    "feel my heartbeat moving to the beat"
+}
+
+// TODO: move to controller
+async fn run() {
+    let client = Client::try_default()
+        .await
+        .expect("could not connect to k8s");
+    let root = Config::default().labels(&format!("{ACTIVE_LABEL}=true"));
+    let related = Config::default().labels(&format!("{WHISPER_LABEL}=true"));
+    let api = Api::<Secret>::all(client.clone());
+    info!("watching secrets with label {ACTIVE_LABEL}");
+    Controller::new(api.clone(), root)
+        .watches(api, related, |secret| {
+            let ns = secret.labels().get(NAMESPACE_LABEL)?;
+            Some(ObjectRef::new(&secret.name_any()).within(ns))
+        })
+        .shutdown_on_signal()
+        .run(dispatcher, error, Arc::new(Data { client }))
+        .for_each(|res| async move {
+            match res {
+                Ok(o) => info!("reconciled {:?}", o),
+                Err(RuntimeError::ObjectNotFound(_)) => info!("object already deleted"),
+                Err(e) => warn!("reconcile failed: {}", e),
+            }
+        })
+        .await;
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let exporter = SpanExporter::builder().with_tonic().build().unwrap();
@@ -268,28 +299,9 @@ async fn main() -> anyhow::Result<()> {
         .with(otel)
         .with(fmt::layer().with_filter(filter))
         .init();
-
-    let client = Client::try_default()
-        .await
-        .expect("could not connect to k8s");
-    let root = Config::default().labels(&format!("{ACTIVE_LABEL}=true"));
-    let related = Config::default().labels(&format!("{WHISPER_LABEL}=true"));
-    let api = Api::<Secret>::all(client.clone());
-    info!("watching secrets with label {ACTIVE_LABEL}");
-    Controller::new(api.clone(), root)
-        .watches(api, related, |secret| {
-            let ns = secret.labels().get(NAMESPACE_LABEL)?;
-            Some(ObjectRef::new(&secret.name_any()).within(ns))
-        })
-        .run(dispatcher, error, Arc::new(Data { client }))
-        .for_each(|res| async move {
-            match res {
-                Ok(o) => info!("reconciled {:?}", o),
-                Err(RuntimeError::ObjectNotFound(_)) => info!("object already deleted"),
-                Err(e) => warn!("reconcile failed: {}", e),
-            }
-        })
-        .await;
+    let controller = run();
+    let server = serve();
+    tokio::join!(controller, server).1?;
     Ok(())
 }
 
