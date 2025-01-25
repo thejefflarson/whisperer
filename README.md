@@ -95,7 +95,7 @@ target      sync   Opaque   1      3m57s
 target2     sync   Opaque   1      10m
 ```
 
-Or look for where a particular secrets are mirrored to:
+Or look for where a particular secret is mirrored to:
 ```
 $ kubectl get secrets -l "secret-syncer.jeffl.es/name=sync,secret-syncer.jeffl.es/namespace=source" --all-namespaces
 NAMESPACE   NAME   TYPE     DATA   AGE
