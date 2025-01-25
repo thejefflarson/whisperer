@@ -13,11 +13,10 @@ use kube::runtime::{finalizer, Controller};
 use kube::{Api, Client, ResourceExt};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::SpanExporter;
+use opentelemetry_sdk::runtime;
 use opentelemetry_sdk::trace::{RandomIdGenerator, TracerProvider};
-use opentelemetry_sdk::{resource, runtime};
 use tokio::time::Duration;
 use tracing::{error, info, warn};
-use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -270,7 +269,7 @@ mod test {
         ByteString,
     };
     use kube::{
-        api::{DeleteParams, ListParams, ObjectMeta, PostParams},
+        api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
         Api, Client,
     };
     use std::{collections::BTreeMap, sync::Arc};
@@ -299,35 +298,40 @@ mod test {
                 .unwrap();
         }
         let api: Api<Secret> = Api::namespaced(client.clone(), "source");
-        api.create(
-            &PostParams::default(),
-            &Secret {
-                data: Some(BTreeMap::from([(
-                    "secret".to_string(),
-                    ByteString("secret".into()),
+        let secret_patch = Secret {
+            data: Some(BTreeMap::from([(
+                "secret".to_string(),
+                ByteString("secret".into()),
+            )])),
+            metadata: ObjectMeta {
+                annotations: Some(BTreeMap::from([(
+                    NAMESPACE_ANNOTATION.to_string(),
+                    "target,target2,missing".to_string(),
                 )])),
-                metadata: ObjectMeta {
-                    annotations: Some(BTreeMap::from([(
-                        NAMESPACE_ANNOTATION.to_string(),
-                        "target,target2,missing".to_string(),
-                    )])),
-                    labels: Some(BTreeMap::from([(
-                        ACTIVE_LABEL.to_string(),
-                        "true".to_string(),
-                    )])),
-                    name: Some("sync".to_string()),
-                    namespace: Some("source".to_string()),
-                    ..ObjectMeta::default()
-                },
-                ..Secret::default()
+                labels: Some(BTreeMap::from([(
+                    ACTIVE_LABEL.to_string(),
+                    "true".to_string(),
+                )])),
+                name: Some("sync".to_string()),
+                namespace: Some("source".to_string()),
+                ..ObjectMeta::default()
             },
-        )
-        .await
-        .unwrap();
+            ..Secret::default()
+        };
+        let _ = api
+            .patch(
+                "sync",
+                &PatchParams::apply("secret-syncer.jeffl.es"),
+                &Patch::Apply(secret_patch.clone()),
+            )
+            .await
+            .unwrap();
         let api = Api::<Secret>::all(client.clone());
         let items = api.list(&lp).await.unwrap().items;
-        assert!(items.len() == 1);
-        let data = Arc::new(Data { client });
+        assert!(items.len() == 1, "secret created");
+        let data = Arc::new(Data {
+            client: client.clone(),
+        });
         let secret = Arc::new(items.first().unwrap().to_owned());
         let _ = apply(secret.clone(), data.clone()).await.unwrap();
         let mirror_params = ListParams {
@@ -335,12 +339,35 @@ mod test {
             ..Default::default()
         };
         let items = api.list(&mirror_params).await.unwrap().items;
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 2, "secret is synced");
+        let patch = Api::<Secret>::namespaced(client, "source");
+        let mut secret_patch = secret_patch.clone();
+        secret_patch.metadata.annotations = Some(BTreeMap::from([(
+            NAMESPACE_ANNOTATION.to_string(),
+            "target".to_string(),
+        )]));
+        let _ = patch
+            .patch(
+                "sync",
+                &PatchParams::apply("secret-syncer.jeffl.es"),
+                &Patch::Apply(secret_patch),
+            )
+            .await
+            .unwrap();
+
+        let secret = Arc::new(patch.get("sync").await.unwrap());
+        let _ = apply(secret.clone(), data.clone()).await.unwrap();
+        let items = api.list(&mirror_params).await.unwrap().items;
+        assert_eq!(
+            items.len(),
+            1,
+            "child secret is removed when namespace is removed"
+        );
         let _ = cleanup(secret, data).await.unwrap();
         let items = api.list(&lp).await.unwrap().items;
-        assert_eq!(items.len(), 0);
+        assert_eq!(items.len(), 0, "secret is removed");
         let items = api.list(&mirror_params).await.unwrap().items;
-        assert_eq!(items.len(), 0);
+        assert_eq!(items.len(), 0, "child secrets are removed");
         for ns in namespaces {
             nsapi.delete(ns, &DeleteParams::default()).await.unwrap();
         }
