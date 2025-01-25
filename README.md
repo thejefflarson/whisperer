@@ -42,7 +42,9 @@ data:
 And run:
 `kubectl apply -f sync.yaml`
 
-And your secrets are sync accross namespaces! Look at the `target` and `target2` namespaces you have secrets that mirror the secret you created:
+Hot diggedy dog, your secrets are sync accrossed namespaces! 
+
+Just Look at the `target` and `target2` namespaces! You have secrets that mirror the secret you created:
 ```
 $ kubectl get secrets --all-namespaces
 NAMESPACE     NAME                                  TYPE                DATA   AGE
@@ -121,3 +123,7 @@ kube-system   k3d-test-server-0.node-password.k3s   Opaque              1      4
 kube-system   k3s-serving                           kubernetes.io/tls   2      43m
 ```
 Have a wonderful day!
+
+## One more thing: I feel like other folks have made this.
+
+Sure, but this is how I wanted it to work. Maybe you do to?
