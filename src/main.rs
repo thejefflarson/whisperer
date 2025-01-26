@@ -256,10 +256,6 @@ fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Data>) -> Action {
     Action::requeue(Duration::from_secs(1))
 }
 
-async fn health() -> &'static str {
-    "feel my heartbeat moving to the beat"
-}
-
 // TODO: move to controller
 async fn run() {
     let client = Client::try_default()
