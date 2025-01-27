@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
+use std::env;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -28,7 +29,8 @@ const NAMESPACE_LABEL: &str = "whisperer.jeffl.es/namespace";
 const FINALIZER: &str = "whisperer.jeffl.es/cleanup";
 
 use thiserror::Error;
-use whisper::server::serve;
+use whisperer::metrics::serve as metrics;
+use whisperer::server::serve as server;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Could not retrieve namespaces: {0}")]
@@ -256,7 +258,7 @@ fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Data>) -> Action {
     Action::requeue(Duration::from_secs(1))
 }
 
-// TODO: move to controller
+// TODO: move to controller.rs
 async fn run() {
     let client = Client::try_default()
         .await
@@ -282,8 +284,18 @@ async fn run() {
         .await;
 }
 
+fn port(var: &str) -> u16 {
+    env::var(var)
+        .expect(&format!("{var} not defined"))
+        .parse::<u16>()
+        .expect(&format!("{var} not a valid port"))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let server_port = port("SERVER_PORT");
+    let metrics_port = port("METRICS_PORT");
     let exporter = SpanExporter::builder().with_tonic().build().unwrap();
     let tracer = TracerProvider::builder()
         .with_id_generator(RandomIdGenerator::default())
@@ -295,9 +307,11 @@ async fn main() -> anyhow::Result<()> {
         .with(otel)
         .with(fmt::layer().with_filter(filter))
         .init();
+
     let controller = run();
-    let server = serve();
-    tokio::join!(controller, server).1?;
+    let server = server(server_port);
+    let metrics = metrics(metrics_port);
+    tokio::join!(controller, metrics, server).1?;
     Ok(())
 }
 
