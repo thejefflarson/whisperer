@@ -1,6 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
-use std::sync::Arc;
-
+use crate::{Error, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams};
@@ -8,42 +6,21 @@ use kube::runtime::controller::{Action, Error as RuntimeError};
 use kube::runtime::finalizer::Event;
 use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config;
-
 use kube::runtime::{finalizer, Controller};
 use kube::{Api, Client, ResourceExt};
-
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 use tokio::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{error, info, instrument, warn};
 
-const ACTIVE_LABEL: &str = "whisperer.jeffl.es/sync";
+pub(crate) const ACTIVE_LABEL: &str = "whisperer.jeffl.es/sync";
 const NAMESPACE_ANNOTATION: &str = "whisperer.jeffl.es/namespaces";
 const WHISPER_LABEL: &str = "whisperer.jeffl.es/whisper";
 const NAME_LABEL: &str = "whisperer.jeffl.es/name";
 const NAMESPACE_LABEL: &str = "whisperer.jeffl.es/namespace";
 const FINALIZER: &str = "whisperer.jeffl.es/cleanup";
 
-use thiserror::Error;
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error("Could not retrieve namespaces: {0}")]
-    ListNamespaces(#[source] kube::Error),
-    #[error("Could not retrieve secrets: {0}")]
-    ListSecrets(#[source] kube::Error),
-    #[error("Could not find label {ACTIVE_LABEL} for secret {name} in namespace {namespace}")]
-    MissingLabel { name: String, namespace: String },
-    #[error("Could not find destination annotation for secret {name} in namespace {namespace}")]
-    MissingDestinationAnnotation { name: String, namespace: String },
-    #[error("Could not patch secret: {0}")]
-    Patch(#[source] kube::Error),
-    #[error("Could not delete secret: {0}")]
-    Delete(#[source] kube::Error),
-    #[error("Could not apply finalizers: {0}")]
-    Finalizer(#[source] Box<dyn std::error::Error + Send>),
-}
-type Result<T, E = Error> = std::result::Result<T, E>;
-
-struct Data {
+struct Context {
     client: Client,
 }
 
@@ -90,7 +67,7 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
 ///    in that namespace with child labels, delete those secrets.
 /// 2. Loop through the namespaces listed in the secret's target annotation and whisper secrets
 ///    from the provided parent secret.
-async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
+async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> {
     let labels = secret.labels();
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
@@ -182,7 +159,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action, Error> {
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
-async fn delete(name: String, namespace: String, ctx: Arc<Data>) -> Result<()> {
+async fn delete(name: String, namespace: String, ctx: Arc<Context>) -> Result<()> {
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
     api.delete(&name, &DeleteParams::default())
         .await
@@ -196,7 +173,7 @@ async fn delete(name: String, namespace: String, ctx: Arc<Data>) -> Result<()> {
 /// 1. Delete the `secret.`
 /// 2. Delete child secrets in namespaces in the secret's annotation.
 /// 3. Delete secrets that reference the `secret` but aren't in the annotation's namespace list, just in case.
-async fn cleanup(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
+async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
     delete(name.clone(), namespace.clone(), ctx.clone()).await?;
@@ -231,7 +208,8 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
     Ok(Action::await_change())
 }
 
-async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
+#[instrument(skip(ctx))]
+async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     let api: Api<Secret> = Api::namespaced(
         ctx.client.clone(),
         &secret.namespace().unwrap_or(String::from("")),
@@ -246,7 +224,7 @@ async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Data>) -> Result<Action> {
     .map_err(|e| Error::Finalizer(Box::new(e)))
 }
 
-fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Data>) -> Action {
+fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Context>) -> Action {
     warn!("Requeueing after error {error}");
     Action::requeue(Duration::from_secs(1))
 }
@@ -266,7 +244,7 @@ pub async fn run() {
             Some(ObjectRef::new(&secret.name_any()).within(ns))
         })
         .shutdown_on_signal()
-        .run(dispatcher, error, Arc::new(Data { client }))
+        .run(dispatcher, error, Arc::new(Context { client }))
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!("reconciled {:?}", o),
@@ -279,7 +257,7 @@ pub async fn run() {
 
 #[cfg(test)]
 mod test {
-    use super::{apply, cleanup, Data, ACTIVE_LABEL, NAMESPACE_ANNOTATION, WHISPER_LABEL};
+    use super::{apply, cleanup, Context, ACTIVE_LABEL, NAMESPACE_ANNOTATION, WHISPER_LABEL};
     use k8s_openapi::{
         api::core::v1::{Namespace, Secret},
         ByteString,
@@ -346,7 +324,7 @@ mod test {
         let api = Api::<Secret>::all(client.clone());
         let items = api.list(&lp).await.unwrap().items;
         assert!(items.len() == 1, "secret created");
-        let data = Arc::new(Data {
+        let data = Arc::new(Context {
             client: client.clone(),
         });
 
