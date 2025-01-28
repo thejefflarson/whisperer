@@ -1,4 +1,4 @@
-use crate::controller::ACTIVE_LABEL;
+use labels::ACTIVE_LABEL;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -17,6 +17,8 @@ pub enum Error {
     Delete(#[source] kube::Error),
     #[error("Could not apply finalizers: {0}")]
     Finalizer(#[source] Box<dyn std::error::Error + Send>),
+    #[error("Could not publish event: {0}")]
+    Event(#[source] kube::Error),
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -30,3 +32,6 @@ pub mod controller;
 pub mod metrics;
 pub mod server;
 pub mod telemetry;
+
+mod ext;
+mod labels;

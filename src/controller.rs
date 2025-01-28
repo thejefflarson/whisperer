@@ -1,27 +1,25 @@
+use crate::ext::SecretExt;
+use crate::labels::*;
 use crate::{Error, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, Secret};
-use kube::api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::{Action, Error as RuntimeError};
+use kube::runtime::events::{Event as Notice, EventType, Recorder, Reporter};
 use kube::runtime::finalizer::Event;
 use kube::runtime::reflector::ObjectRef;
 use kube::runtime::watcher::Config;
 use kube::runtime::{finalizer, Controller};
-use kube::{Api, Client, ResourceExt};
-use std::collections::{BTreeMap, HashSet};
+use kube::{Api, Client, Resource, ResourceExt};
+use std::collections::HashSet;
+use std::env;
 use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::{error, info, instrument, warn};
 
-pub(crate) const ACTIVE_LABEL: &str = "whisperer.jeffl.es/sync";
-const NAMESPACE_ANNOTATION: &str = "whisperer.jeffl.es/namespaces";
-const WHISPER_LABEL: &str = "whisperer.jeffl.es/whisper";
-const NAME_LABEL: &str = "whisperer.jeffl.es/name";
-const NAMESPACE_LABEL: &str = "whisperer.jeffl.es/namespace";
-const FINALIZER: &str = "whisperer.jeffl.es/cleanup";
-
 struct Context {
     client: Client,
+    recorder: Recorder,
 }
 
 type NSSet = HashSet<String>;
@@ -78,7 +76,6 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
     }
 
     info!("reconciling {name} in {namespace}");
-
     let client = &ctx.client;
     let intersection = secret_namespaces(secret.clone(), client.clone()).await?;
 
@@ -109,50 +106,28 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
     // Patch and create new objects, this might happen multiple times, but we don't care because it
     // is idempotent
     for ns in intersection {
-        let api: Api<Secret> = Api::namespaced(client.clone(), &ns);
-        let secret = (*secret).clone();
-        let meta = secret.metadata.clone();
-        // I could an argument to see not syncing labels and annotations.
-        let mut labels = labels
-            .clone()
-            .iter()
-            .filter(|it| it.0 != ACTIVE_LABEL)
-            .map(|it| (it.0.to_owned(), it.1.to_owned()))
-            .collect::<BTreeMap<String, String>>();
-        labels.insert(NAMESPACE_LABEL.to_string(), namespace.clone());
-        labels.insert(NAME_LABEL.to_string(), name.clone());
-        labels.insert(WHISPER_LABEL.to_string(), "true".to_string());
-        let annotations = secret
-            .annotations()
-            .clone()
-            .iter()
-            .filter(|it| it.0 != NAMESPACE_ANNOTATION)
-            .map(|it| (it.0.to_owned(), it.1.to_owned()))
-            .collect::<BTreeMap<String, String>>();
-        let finalizers = meta
-            .finalizers
-            .map(|it| it.into_iter().filter(|it| it != FINALIZER).collect());
-        let dest = Secret {
-            data: secret.data,
-            immutable: secret.immutable,
-            metadata: ObjectMeta {
-                annotations: Some(annotations),
-                deletion_grace_period_seconds: meta.deletion_grace_period_seconds,
-                finalizers,
-                generate_name: meta.generate_name,
-                labels: Some(labels),
-                name: meta.name,
-                namespace: Some(ns.clone()),
-                self_link: meta.self_link,
-                ..ObjectMeta::default()
-            },
-            string_data: secret.string_data,
-            type_: secret.type_,
-        };
-        let patch = Patch::Apply(&dest);
-        api.patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
+        let api: Api<Secret> = Api::namespaced(client.clone(), &ns.clone());
+        let secret = (*secret).clone().dup(ns.clone());
+        let secret_oref = secret.object_ref(&());
+        let patch = Patch::Apply(&secret);
+        let res = api
+            .patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
             .await
             .map_err(Error::Patch)?;
+        let oref = res.object_ref(&());
+        ctx.recorder
+            .publish(
+                &Notice {
+                    type_: EventType::Normal,
+                    reason: "Sync Requested".into(),
+                    note: Some(format!("Synced {name} from {namespace} to {ns}")),
+                    action: "Sync".into(),
+                    secondary: Some(oref),
+                },
+                &secret_oref,
+            )
+            .await
+            .map_err(Error::Event)?;
         info!("created whisper of {name} from {namespace} to {ns}");
     }
 
@@ -229,7 +204,6 @@ fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Context>) -> Action {
     Action::requeue(Duration::from_secs(1))
 }
 
-// TODO: move to controller.rs
 pub async fn run() {
     let client = Client::try_default()
         .await
@@ -238,13 +212,20 @@ pub async fn run() {
     let related = Config::default().labels(&format!("{WHISPER_LABEL}=true"));
     let api = Api::<Secret>::all(client.clone());
     info!("watching secrets with label {ACTIVE_LABEL}");
+    let recorder = Recorder::new(
+        client.clone(),
+        Reporter {
+            controller: "whisperer".into(),
+            instance: env::var("CONTROLLER_POD_NAME").ok(),
+        },
+    );
     Controller::new(api.clone(), root)
         .watches(api, related, |secret| {
             let ns = secret.labels().get(NAMESPACE_LABEL)?;
             Some(ObjectRef::new(&secret.name_any()).within(ns))
         })
         .shutdown_on_signal()
-        .run(dispatcher, error, Arc::new(Context { client }))
+        .run(dispatcher, error, Arc::new(Context { client, recorder }))
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!("reconciled {:?}", o),
@@ -264,9 +245,10 @@ mod test {
     };
     use kube::{
         api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
+        runtime::events::{Recorder, Reporter},
         Api, Client,
     };
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::{collections::BTreeMap, env, sync::Arc};
 
     #[tokio::test]
     #[ignore = "uses k8s api"]
@@ -324,8 +306,16 @@ mod test {
         let api = Api::<Secret>::all(client.clone());
         let items = api.list(&lp).await.unwrap().items;
         assert!(items.len() == 1, "secret created");
+        let recorder = Recorder::new(
+            client.clone(),
+            Reporter {
+                controller: "whisperer".into(),
+                instance: env::var("CONTROLLER_POD_NAME").ok(),
+            },
+        );
         let data = Arc::new(Context {
             client: client.clone(),
+            recorder,
         });
 
         let secret = Arc::new(items.first().unwrap().to_owned());
