@@ -1,6 +1,6 @@
+use crate::error::{Error, Result};
 use crate::ext::SecretExt;
 use crate::labels::*;
-use crate::{Error, Result};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
