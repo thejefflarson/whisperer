@@ -2,7 +2,7 @@ use crate::error::{Error, Result};
 use crate::ext::SecretExt;
 use crate::labels::*;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{Namespace, Secret};
+use k8s_openapi::api::core::v1::{Namespace, ObjectReference, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::{Action, Error as RuntimeError};
 use kube::runtime::events::{Event as Notice, EventType, Recorder, Reporter};
@@ -20,6 +20,16 @@ use tracing::{error, info, instrument, warn};
 struct Context {
     client: Client,
     recorder: Recorder,
+}
+
+impl Context {
+    async fn record(&self, notice: &Notice, ref_: &ObjectReference) -> Result<()> {
+        self.recorder
+            .publish(notice, ref_)
+            .await
+            .map_err(Error::Event)?;
+        Ok(())
+    }
 }
 
 type NSSet = HashSet<String>;
@@ -65,6 +75,7 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
 ///    in that namespace with child labels, delete those secrets.
 /// 2. Loop through the namespaces listed in the secret's target annotation and whisper secrets
 ///    from the provided parent secret.
+#[instrument(skip(ctx))]
 async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> {
     let labels = secret.labels();
     let name = secret.name_any();
@@ -92,13 +103,29 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
         it.name_any() == name && !intersection.contains(&it.namespace().unwrap_or(String::from("")))
     });
     for orphan in orphans {
-        let namespace = orphan.namespace().unwrap_or(String::from(""));
-        info!("namespace {namespace} is not in {NAMESPACE_LABEL} on {name}, deleting child secret");
+        let ns = orphan.namespace().unwrap_or(String::from(""));
+        info!(
+            "namespace {} is not in {NAMESPACE_LABEL} on {name}, deleting child secret",
+            ns.clone()
+        );
         delete(
             orphan.name_any(),
             // this shouldn't be blank, but making the compiler happy.
-            namespace,
+            namespace.clone(),
             ctx.clone(),
+        )
+        .await?;
+        ctx.record(
+            &Notice {
+                type_: EventType::Normal,
+                reason: "Delete Requested".into(),
+                note: Some(format!(
+                    "Deleting {name} in {ns} that's not in the {NAMESPACE_LABEL} in {namespace}"
+                )),
+                action: "Delete".into(),
+                secondary: None,
+            },
+            &secret.object_ref(&()),
         )
         .await?;
     }
@@ -108,26 +135,22 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
     for ns in intersection {
         let api: Api<Secret> = Api::namespaced(client.clone(), &ns.clone());
         let secret = (*secret).clone().dup(ns.clone());
-        let secret_oref = secret.object_ref(&());
         let patch = Patch::Apply(&secret);
         let res = api
             .patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
             .await
             .map_err(Error::Patch)?;
-        let oref = res.object_ref(&());
-        ctx.recorder
-            .publish(
-                &Notice {
-                    type_: EventType::Normal,
-                    reason: "Sync Requested".into(),
-                    note: Some(format!("Synced {name} from {namespace} to {ns}")),
-                    action: "Sync".into(),
-                    secondary: Some(oref),
-                },
-                &secret_oref,
-            )
-            .await
-            .map_err(Error::Event)?;
+        ctx.record(
+            &Notice {
+                type_: EventType::Normal,
+                reason: "Sync Requested".into(),
+                note: Some(format!("Synced {name} from {namespace} to {ns}")),
+                action: "Sync".into(),
+                secondary: Some(res.object_ref(&())),
+            },
+            &secret.object_ref(&()),
+        )
+        .await?;
         info!("created whisper of {name} from {namespace} to {ns}");
     }
 
@@ -143,17 +166,35 @@ async fn delete(name: String, namespace: String, ctx: Arc<Context>) -> Result<()
         .map_right(|_| info!("deleted secret {name} in {namespace}"));
     Ok(())
 }
-
 /// Does three things:
 /// 1. Delete the `secret.`
 /// 2. Delete child secrets in namespaces in the secret's annotation.
 /// 3. Delete secrets that reference the `secret` but aren't in the annotation's namespace list, just in case.
+#[instrument(skip(ctx))]
 async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
     delete(name.clone(), namespace.clone(), ctx.clone()).await?;
     // First we delete the secrets in the namespaces listed on the secret.
-    let union = secret_namespaces(secret, ctx.client.clone()).await?;
+    let union = secret_namespaces(secret.clone(), ctx.client.clone()).await?;
+    let namespaces = union
+        .clone()
+        .into_iter()
+        .collect::<Vec<String>>()
+        .join(", ");
+    ctx.record(
+        &Notice {
+            type_: EventType::Normal,
+            reason: "Delete Requested".into(),
+            note: Some(format!(
+                "Deleting {name} in {namespace} and namespaces {namespaces}"
+            )),
+            action: "Delete".into(),
+            secondary: None,
+        },
+        &secret.object_ref(&()),
+    )
+    .await?;
     for ns in union.clone() {
         delete(name.clone(), ns, ctx.clone()).await?;
     }
