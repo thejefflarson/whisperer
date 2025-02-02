@@ -1,25 +1,31 @@
-use crate::error::{Error, Result};
-use crate::ext::SecretExt;
-use crate::labels::*;
+use crate::{
+    error::{Error, Result},
+    ext::SecretExt,
+    labels::*,
+    metrics::MetricState,
+};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, ObjectReference, Secret};
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
-use kube::runtime::controller::{Action, Error as RuntimeError};
-use kube::runtime::events::{Event as Notice, EventType, Recorder, Reporter};
-use kube::runtime::finalizer::Event;
-use kube::runtime::reflector::ObjectRef;
-use kube::runtime::watcher::Config;
-use kube::runtime::{finalizer, Controller};
-use kube::{Api, Client, Resource, ResourceExt};
-use std::collections::HashSet;
-use std::env;
-use std::sync::Arc;
+use kube::{
+    api::{DeleteParams, ListParams, Patch, PatchParams},
+    runtime::{
+        controller::{Action, Error as RuntimeError},
+        events::{Event as Notice, EventType, Recorder, Reporter},
+        finalizer::{finalizer, Event},
+        reflector::ObjectRef,
+        watcher::Config,
+        Controller,
+    },
+    Api, Client, Resource, ResourceExt,
+};
+use std::{collections::HashSet, env, sync::Arc};
 use tokio::time::Duration;
 use tracing::{error, info, instrument, warn};
 
 struct Context {
     client: Client,
     recorder: Recorder,
+    metrics: MetricState,
 }
 
 impl Context {
@@ -226,18 +232,24 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
 
 #[instrument(skip(ctx))]
 async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
-    let api: Api<Secret> = Api::namespaced(
-        ctx.client.clone(),
-        &secret.namespace().unwrap_or(String::from("")),
-    );
+    let metrics = ctx.metrics.clone();
+    let namespace = secret.namespace().unwrap_or(String::from(""));
+    let name = secret.name_any();
+    // NEAT! It's very cool that this sticks around across threads and await, rust is excellent
+    let _ = metrics.duration(namespace.clone(), name.clone());
+    let api: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
     finalizer(&api, FINALIZER, secret, |event| async {
+        metrics.reconcile(namespace.clone(), name.clone());
         match event {
             Event::Apply(secret) => apply(secret, ctx).await,
             Event::Cleanup(secret) => cleanup(secret, ctx).await,
         }
     })
     .await
-    .map_err(|e| Error::Finalizer(Box::new(e)))
+    .map_err(|e| {
+        metrics.failure(namespace.clone(), name);
+        Error::Finalizer(Box::new(e))
+    })
 }
 
 fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Context>) -> Action {
@@ -245,7 +257,7 @@ fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Context>) -> Action {
     Action::requeue(Duration::from_secs(1))
 }
 
-pub async fn run() {
+pub async fn run(metrics: MetricState) {
     let client = Client::try_default()
         .await
         .expect("could not connect to k8s");
@@ -266,7 +278,15 @@ pub async fn run() {
             Some(ObjectRef::new(&secret.name_any()).within(ns))
         })
         .shutdown_on_signal()
-        .run(dispatcher, error, Arc::new(Context { client, recorder }))
+        .run(
+            dispatcher,
+            error,
+            Arc::new(Context {
+                client,
+                recorder,
+                metrics,
+            }),
+        )
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!("reconciled {:?}", o),

@@ -18,6 +18,8 @@ use opentelemetry::{
 use prometheus::{proto::MetricFamily, Encoder, Registry, TextEncoder};
 use tokio::net::TcpListener;
 
+// this file is neat! I'm proud of it.
+
 #[derive(Clone)]
 pub struct Metrics {
     registry: Registry,
@@ -53,6 +55,12 @@ pub struct MetricState {
 }
 
 impl MetricState {
+    pub fn new(registry: Registry, meter: Meter) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(Metrics::new(registry, meter))),
+        }
+    }
+
     pub fn reconcile(&self, key: String, value: String) {
         self.inner
             .write()
@@ -109,7 +117,7 @@ impl Drop for Record {
     }
 }
 
-// do this https://github.com/open-telemetry/opentelemetry-rust/blob/main/opentelemetry-prometheus/examples/hyper.rs
+// from https://github.com/open-telemetry/opentelemetry-rust/blob/main/opentelemetry-prometheus/examples/hyper.rs
 async fn metrics(State(state): State<MetricState>) -> impl IntoResponse {
     let metrics = state.metrics();
     let mut buffer = vec![];
