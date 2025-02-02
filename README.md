@@ -4,7 +4,7 @@ A mostly dumb way to make sure every k8s namespace has your pull secrets.
 ## Ok, what is all this?
 **whisperer** is a kubernetes operator that whispers a secret to another namespaces.
 
-It's 300 lines of code, most of which is handling edgecases, I'd love to know if there are more I haven't thought of.
+It's 300 lines of core code in `src/controller.rs`, most of which is handling edgecases, I'd love to know if there are more I haven't thought of.
 
 ## Cool so how do I use it?
 Whelp, right now, maybe hold off? I'm a few days away from CICD and a helm chart, but when that's ready, here's how it works.
@@ -52,7 +52,7 @@ $ cargo run
 And run:
 `kubectl apply -f sync.yaml`
 
-Hot diggedy dog, your secrets are synced across namespaces! 
+Hot diggedy dog, your secrets are synced across namespaces!
 
 Just Look at the `target` and `target2` namespaces! You have secrets that mirror the secret you created:
 ```
@@ -119,7 +119,7 @@ NEAT-O KEEN-O!
 
 ## Yeah, what's the monitoring sitch like?
 
-Well, it has [tracing](https://docs.rs/tracing/latest/tracing/) so all the environment switches work there, and bonus: it also strives to have [opentelemetry](https://opentelemetry.io/) bells and whistles, but honestly I only understand like 5% of that stuff. I guess I'll add the prometheus stuff, idk, this is pretty lightweight. 
+Well, it has [tracing](https://docs.rs/tracing/latest/tracing/) so all the environment switches work there, and bonus: it also strives to have [opentelemetry](https://opentelemetry.io/) bells and whistles, and there's a prometheus endpoint if that's your jam, but honestly I only understand like 5% of that stuff.
 
 ## Ok, but like namespaces are supposed to be independent.
 
