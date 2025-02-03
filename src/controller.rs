@@ -299,6 +299,8 @@ pub async fn run(metrics: MetricState) {
 
 #[cfg(test)]
 mod test {
+    use crate::metrics::MetricState;
+
     use super::{apply, cleanup, Context, ACTIVE_LABEL, NAMESPACE_ANNOTATION, WHISPER_LABEL};
     use k8s_openapi::{
         api::core::v1::{Namespace, Secret},
@@ -309,6 +311,9 @@ mod test {
         runtime::events::{Recorder, Reporter},
         Api, Client,
     };
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry_sdk::metrics::SdkMeterProvider;
+    use prometheus::Registry;
     use std::{collections::BTreeMap, env, sync::Arc};
 
     #[tokio::test]
@@ -374,9 +379,21 @@ mod test {
                 instance: env::var("CONTROLLER_POD_NAME").ok(),
             },
         );
+
+        // TODO: make this a method
+        let registry = Registry::new();
+        let exporter = opentelemetry_prometheus::exporter()
+            .with_registry(registry.clone())
+            .build()
+            .unwrap();
+        let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+        let meter = provider.meter("whisperer");
+
+        let metrics = MetricState::new(registry, meter);
         let data = Arc::new(Context {
             client: client.clone(),
             recorder,
+            metrics,
         });
 
         let secret = Arc::new(items.first().unwrap().to_owned());
