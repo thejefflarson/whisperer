@@ -422,18 +422,18 @@ mod test {
             "child secret is removed when namespace is removed"
         );
 
-        // let _ = cleanup(secret, data).await.unwrap();
-        // let items = api.list(&lp).await.unwrap().items;
-        // assert_eq!(items.len(), 0, "secret is removed");
-        // let items = api.list(&whisper_params).await.unwrap().items;
-        // assert_eq!(
-        //     items.len(),
-        //     0,
-        //     "child secrets is removed when parent is removed"
-        // );
+        let _ = cleanup(secret, data).await.unwrap();
+        let items = api.list(&lp).await.unwrap().items;
+        assert_eq!(items.len(), 0, "secret is removed");
+        let items = api.list(&whisper_params).await.unwrap().items;
+        assert_eq!(
+            items.len(),
+            0,
+            "child secrets is removed when parent is removed"
+        );
 
-        // for ns in namespaces {
-        //     nsapi.delete(ns, &DeleteParams::default()).await.unwrap();
-        // }
+        for ns in namespaces {
+            nsapi.delete(ns, &DeleteParams::default()).await.unwrap();
+        }
     }
 }

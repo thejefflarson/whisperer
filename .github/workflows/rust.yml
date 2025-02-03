@@ -17,8 +17,12 @@ jobs:
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
     - uses: actions/checkout@v4
     - uses: Swatinem/rust-cache@v2
+    - uses: nolar/setup-k3d-k3s@v1
+      with:
+        k3d-name: kube
+        k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
     - name: Run tests
-      run: cargo test
+      run: cargo test --lib --all -- --ignored
       env:
         RUST_BACKTRACE: 1
   docker:
