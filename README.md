@@ -125,7 +125,7 @@ Well, it has [tracing](https://docs.rs/tracing/latest/tracing/) so all the envir
 
 Yeah I know.
 
-## Thanks, I hate it, but I'll use it.
+## Thanks, I hate it.
 
 Cool! I really like you too!  But if it isn't your thing, delete the source secret and everything is gone:
 ```

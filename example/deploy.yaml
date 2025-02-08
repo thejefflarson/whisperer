@@ -28,4 +28,4 @@ metadata:
   annotations:
     secret-syncer.jeffl.es/namespaces: "target,target2,missing"
 data:
-  secret: c2VjcmV0LW1vcmUK
+  secret: dG90YWxseSBhIHN1cGVyIGR1cGVyIHNlY3JldCB5b3Ugc2hvdWxkbid0IHRlbGwgYW55b25lCg==

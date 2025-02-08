@@ -23,6 +23,8 @@ jobs:
         driver: remote
         endpoint: tcp://buildkit:1234
     - uses: nolar/setup-k3d-k3s@v1
+      env:
+        DOCKER_HOST: tcp://buildkit:1234
       with:
         k3d-name: kube
         k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
