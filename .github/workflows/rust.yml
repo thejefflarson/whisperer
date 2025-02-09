@@ -21,6 +21,7 @@ jobs:
       run: |
         ls -R /var/run/
         docker ps
+        docker version
     - uses: nolar/setup-k3d-k3s@v1
       with:
         k3d-name: kube
