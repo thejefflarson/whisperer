@@ -25,6 +25,8 @@ jobs:
       with:
         k3d-name: kube
         k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
+      env:
+        DOCKER_HOST: unix:///var/run/user/1001/docker.sock
     - name: Run tests
       run: cargo nextest --lib --all
       env:
