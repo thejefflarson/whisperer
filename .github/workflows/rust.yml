@@ -17,9 +17,9 @@ jobs:
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
     - uses: actions/checkout@v4
     - uses: Swatinem/rust-cache@v2
-    - name: Start Docker
+    - name: Check Docker
       run: |
-        dockerd &
+        docker ps
     - uses: nolar/setup-k3d-k3s@v1
       with:
         k3d-name: kube
