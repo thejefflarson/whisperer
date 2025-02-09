@@ -19,7 +19,7 @@ jobs:
     - uses: Swatinem/rust-cache@v2
     - name: Check Docker
       run: |
-        ls /var/run/
+        ls -R /var/run/
         docker ps
     - uses: nolar/setup-k3d-k3s@v1
       with:
