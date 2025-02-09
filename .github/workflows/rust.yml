@@ -26,6 +26,7 @@ jobs:
       env:
         DOCKER_HOST: tcp://buildkit:1234
         DOCKER_BUILDKIT: "1"
+        DOCKER_TLS: "1"
       with:
         k3d-name: kube
         k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
