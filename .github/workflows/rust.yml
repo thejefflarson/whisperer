@@ -17,17 +17,6 @@ jobs:
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
     - uses: actions/checkout@v4
     - uses: Swatinem/rust-cache@v2
-    - name: Check Docker
-      run: |
-        ls -R /var/run/
-        docker ps
-        docker version
-    - uses: nolar/setup-k3d-k3s@v1
-      with:
-        k3d-name: kube
-        k3d-args: "--trace"
-      env:
-        DOCKER_HOST: unix:///var/run/user/1001/docker.sock
     - name: Run tests
       run: cargo nextest --lib --all
       env:
