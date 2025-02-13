@@ -18,7 +18,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: Swatinem/rust-cache@v2
     - name: Run tests
-      run: cargo nextest --lib --all
+      run: cargo nextest run all --no-tests=pass
       env:
         RUST_BACKTRACE: 1
   docker:
