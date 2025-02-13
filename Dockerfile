@@ -1,5 +1,6 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
-RUN cargo install --locked sccache
+RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+RUN cargo binstall sccache
 ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
 WORKDIR /app
 
