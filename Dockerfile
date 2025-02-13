@@ -1,7 +1,4 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
-RUN curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-RUN cargo binstall sccache
-ENV RUSTC_WRAPPER=sccache SCCACHE_DIR=/sccache
 WORKDIR /app
 
 FROM chef AS planner
@@ -17,7 +14,6 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/app/target,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json
 
 # Build application
@@ -25,14 +21,13 @@ COPY . .
 RUN --mount=type=cache,target=/app/target,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=$SCCACHE_DIR,sharing=locked \
     cargo build --release
 
 RUN --mount=type=cache,target=/app/target,sharing=locked \
     cp /app/target/release/whisperer ./whisperer
 
 FROM cgr.dev/chainguard/static
-COPY --from=builder --chown=nonroot:nonroot ./whisperer /app/
+COPY --from=builder --chown=nonroot:nonroot /app/whisperer /app/
 USER nonroot
 EXPOSE 8080
 ENTRYPOINT ["/app/whisperer"]
