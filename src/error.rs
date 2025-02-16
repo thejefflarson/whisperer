@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tokio::{sync::watch::error, task::JoinError};
 
 use crate::labels::ACTIVE_LABEL;
 
@@ -20,6 +21,10 @@ pub enum Error {
     Finalizer(#[source] Box<dyn std::error::Error + Send>),
     #[error("Could not publish event: {0}")]
     Event(#[source] kube::Error),
+    #[error("Could not shutdown lock: {0}")]
+    Lock(#[source] JoinError),
+    #[error("Could not read from channel: {0}")]
+    Channel(#[source] error::RecvError),
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

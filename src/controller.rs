@@ -1,4 +1,5 @@
 use crate::{
+    election::{start, LeaderState},
     error::{Error, Result},
     ext::SecretExt,
     labels::*,
@@ -26,6 +27,7 @@ struct Context {
     client: Client,
     recorder: Recorder,
     metrics: MetricState,
+    state: LeaderState,
 }
 
 impl Context {
@@ -57,8 +59,12 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
     } else {
         let name = secret.name_any();
         let namespace = secret.namespace().unwrap_or(String::from(""));
-        error!("missing namespace annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}', not syncing");
-        return Err(Error::MissingDestinationAnnotation { name, namespace });
+        let error = Error::MissingDestinationAnnotation {
+            name: name.clone(),
+            namespace: namespace.clone(),
+        };
+        error!(error = ?error, "missing namespace annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}', not syncing");
+        return Err(error);
     };
     let difference = wanted
         .difference(&namespaces)
@@ -199,9 +205,9 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
         delete(name.clone(), ns, ctx.clone()).await?;
     }
 
-    // And just to be absolutely sure we delete any remaining secreats that have our child labels on them,
+    // And just to be absolutely sure we delete any remaining secrets that have our child labels on them,
     // but aren't in the secrets namespace list. This may only happen if there's a race where a
-    // synced secret namespaces have changed and it's then immediately deleted (even then it would
+    // synced secret's namespaces have changed and it's then immediately deleted (even then it would
     // be real tricky to get right), but it's worth being careful here.
     let api: Api<Secret> = Api::<Secret>::all(ctx.client.clone());
     let secrets = api
@@ -226,6 +232,10 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
 
 #[instrument(skip(ctx))]
 async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
+    if !ctx.state.is_leader() {
+        info!("{} is leader ignoring change", ctx.state.leader());
+        return Ok(Action::await_change());
+    }
     let metrics = ctx.metrics.clone();
     let namespace = secret.namespace().unwrap_or(String::from(""));
     let name = secret.name_any();
@@ -247,7 +257,7 @@ async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
 }
 
 fn error(_object: Arc<Secret>, error: &Error, _ctx: Arc<Context>) -> Action {
-    warn!("Requeueing after error {error}");
+    warn!(error = ?error, "Requeueing after error");
     Action::requeue(Duration::from_secs(1))
 }
 
@@ -255,6 +265,8 @@ pub async fn run(metrics: MetricState) {
     let client = Client::try_default()
         .await
         .expect("could not connect to k8s");
+
+    let (state, lock) = start(client.clone()).await;
     let root = Config::default().labels(&format!("{ACTIVE_LABEL}=true"));
     let related = Config::default().labels(&format!("{WHISPER_LABEL}=true"));
     let api = Api::<Secret>::all(client.clone());
@@ -279,16 +291,18 @@ pub async fn run(metrics: MetricState) {
                 client,
                 recorder,
                 metrics,
+                state,
             }),
         )
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!("reconciled {:?}", o),
                 Err(RuntimeError::ObjectNotFound(_)) => info!("object already deleted"),
-                Err(e) => warn!("reconcile failed: {}", e),
+                Err(e) => warn!(error = ?e, "reconcile failed"),
             }
         })
         .await;
+    let _ = lock.retire().await;
 }
 
 #[cfg(test)]
