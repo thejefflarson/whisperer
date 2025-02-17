@@ -1185,6 +1185,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "236e667b670a5cdf90c258f5a55794ec5ac5027e960c224bff8367a59e1e6426"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.11",
+ "tracing",
+]
+
+[[package]]
 name = "opentelemetry-otlp"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1193,7 +1207,7 @@ dependencies = [
  "async-trait",
  "futures-core",
  "http",
- "opentelemetry",
+ "opentelemetry 0.27.1",
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
@@ -1210,7 +1224,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b834e966ea5e2d03dfe5f2253f03d22cce21403ee940265070eeee96cee0bcc"
 dependencies = [
  "once_cell",
- "opentelemetry",
+ "opentelemetry 0.27.1",
  "opentelemetry_sdk",
  "prometheus",
  "protobuf",
@@ -1223,7 +1237,7 @@ version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6e05acbfada5ec79023c85368af14abd0b307c015e9064d249b2a950ef459a6"
 dependencies = [
- "opentelemetry",
+ "opentelemetry 0.27.1",
  "opentelemetry_sdk",
  "prost",
  "tonic",
@@ -1240,7 +1254,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "glob",
- "opentelemetry",
+ "opentelemetry 0.27.1",
  "percent-encoding",
  "rand",
  "serde_json",
@@ -2154,7 +2168,7 @@ checksum = "97a971f6058498b5c0f1affa23e7ea202057a7301dbff68e968b2d578bcbd053"
 dependencies = [
  "js-sys",
  "once_cell",
- "opentelemetry",
+ "opentelemetry 0.27.1",
  "opentelemetry_sdk",
  "smallvec",
  "tracing",
@@ -2324,7 +2338,7 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "kube-leader-election",
- "opentelemetry",
+ "opentelemetry 0.28.0",
  "opentelemetry-otlp",
  "opentelemetry-prometheus",
  "opentelemetry_sdk",
