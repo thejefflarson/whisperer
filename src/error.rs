@@ -1,3 +1,4 @@
+use kube::runtime::wait;
 use thiserror::Error;
 use tokio::{sync::watch::error, task::JoinError};
 
@@ -25,6 +26,8 @@ pub enum Error {
     Lock(#[source] JoinError),
     #[error("Could not read from channel: {0}")]
     Channel(#[source] error::RecvError),
+    #[error("Watch error: {0}")]
+    Watch(#[source] wait::Error),
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

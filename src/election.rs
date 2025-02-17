@@ -1,11 +1,16 @@
 use std::ops::Add;
 use std::time::{Duration, Instant};
 
-use futures::prelude::*;
+use futures::{prelude::*, TryFutureExt};
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
+use k8s_openapi::chrono::{DateTime, Utc};
 use kube::api::{Patch, PatchParams};
+use kube::runtime::conditions::is_deleted;
+use kube::runtime::wait::await_condition;
 use kube::runtime::watcher::watch_object;
-use kube::{Api, Client};
+use kube::runtime::WatchStreamExt;
+use kube::{Api, Client, ResourceExt};
 use tokio::select;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
@@ -76,6 +81,15 @@ impl LeaderState {
         self.rx.borrow().leader()
     }
 }
+
+async fn reconcile(state: State, change: Result<Option<Lease>>) -> State {
+    State::Standby
+}
+
+async fn renew(state: State) -> State {
+    State::Standby
+}
+
 const LOCK_NAME: &str = "whisperer-controller-lock";
 pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
     let hn = gethostname::gethostname().into_string();
@@ -84,8 +98,6 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
     let (state_tx, state_rx) = watch::channel(State::Standby);
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let api = Api::<Lease>::namespaced(client.clone(), &namespace);
-    let watcher = watch_object(api.clone(), LOCK_NAME);
-
     // algorithm
     // 1. Ensure the lease exists
     //    a. if not publish Standby and create one with ourselves as a leader
@@ -95,23 +107,43 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
     //    a. if we're leading renew the lease before the timeout eg every 5 seconds for a 15 second timeout
     //    b. if not check again at jitter * timeout do routine 1.
     // 3. set up a watcher to see if we somehow lose the lease in the meantime
+    // conditions to listen for:
+    // 1. lease is deleted
+    // 2. lease expires
+    // 3. lease changes owner
     let handle = tokio::spawn(async move {
         let mut state = State::Standby;
-        tokio::pin!(watcher);
 
         loop {
             let timer = sleep(Duration::from_secs(5));
+            let deleted = await_condition(api.clone(), LOCK_NAME, |lease: Option<&Lease>| {
+                lease.is_none()
+            });
+            let expired = await_condition(api.clone(), LOCK_NAME, |lease: Option<&Lease>| {
+                lease
+                    .and_then(|lease| lease.spec.clone())
+                    .and_then(|spec| spec.renew_time)
+                    .map_or(true, |time| time.0 < Utc::now())
+            });
+            let owner: Option<String> = None;
+            let owner_changed = await_condition(api.clone(), LOCK_NAME, |lease: Option<&Lease>| {
+                let test = lease
+                    .and_then(|lease| lease.spec.clone())
+                    .and_then(|spec| spec.holder_identity);
+                test == owner
+            });
             select! {
                 // something changed for us
-                Some(change) = watcher.next() => continue,
-                // renew the lease if we're leading
-                _ = timer => continue,
+                change = deleted => state = reconcile(state, change.map_err(Error::Watch)).await,
+                // deleted
+                change = owner_changed => continue,
+                // renew the lease if we're leading else check if we can grab it
+                _ = timer => state = renew(state).await,
                 // we're done here
                 _ = &mut cancel_rx => break
             }
         }
         if let State::Leading { .. } = state {
-            let now = Instant::now().add(Duration::from_secs(1));
             let pp = PatchParams::default();
             let patch = Patch::Apply(Lease {
                 spec: Some(LeaseSpec {
