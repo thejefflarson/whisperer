@@ -1,21 +1,17 @@
-use std::ops::Add;
 use std::time::{Duration, Instant};
 
 use futures::{prelude::*, TryFutureExt};
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use k8s_openapi::chrono::{DateTime, Utc};
+use k8s_openapi::chrono::Utc;
 use kube::api::{Patch, PatchParams};
-use kube::runtime::conditions::is_deleted;
 use kube::runtime::wait::await_condition;
-use kube::runtime::watcher::watch_object;
-use kube::runtime::WatchStreamExt;
-use kube::{Api, Client, ResourceExt};
+use kube::{Api, Client};
 use tokio::select;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
+use tracing::warn;
 
 use crate::error::{Error, Result};
 
@@ -82,8 +78,8 @@ impl LeaderState {
     }
 }
 
-async fn reconcile(state: State, change: Result<Option<Lease>>) -> State {
-    State::Standby
+async fn create(state: State, change: Option<Lease>) -> Result<State> {
+    Ok(State::Standby)
 }
 
 async fn renew(state: State) -> State {
@@ -133,10 +129,14 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                 test == owner
             });
             select! {
-                // something changed for us
-                change = deleted => state = reconcile(state, change.map_err(Error::Watch)).await,
-                // deleted
+                change = deleted => match change {
+                    Ok(lease) => {
+                        let _ = create(state.clone(), lease).await.map(|it| state = it).map_err(|e| warn!(error = ?e, "Creation error"));
+                    },
+                    Err(e) => {warn!(error = ?e, "Error on deleted lease change");}
+                },
                 change = owner_changed => continue,
+                change = expired => continue,
                 // renew the lease if we're leading else check if we can grab it
                 _ = timer => state = renew(state).await,
                 // we're done here

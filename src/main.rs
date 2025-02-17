@@ -5,7 +5,7 @@ use opentelemetry_otlp::SpanExporter;
 use opentelemetry_sdk::{
     metrics::SdkMeterProvider,
     runtime,
-    trace::{RandomIdGenerator, TracerProvider},
+    trace::{RandomIdGenerator, SdkTracerProvider},
 };
 use prometheus::Registry;
 use tracing_subscriber::{fmt, layer::SubscriberExt, prelude::*, EnvFilter};
@@ -28,10 +28,10 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let server_port = port("SERVER_PORT");
     let metrics_port = port("METRICS_PORT");
-    let exporter = SpanExporter::builder().with_tonic().build().unwrap();
-    let tracer = TracerProvider::builder()
+    let exporter = SpanExporter::builder().with_http().build().unwrap();
+    let tracer = SdkTracerProvider::builder()
         .with_id_generator(RandomIdGenerator::default())
-        .with_batch_exporter(exporter, runtime::Tokio)
+        .with_batch_exporter(exporter)
         .build();
     let otel = tracing_opentelemetry::layer().with_tracer(tracer.tracer("whisperer"));
     let filter = EnvFilter::from_default_env();
