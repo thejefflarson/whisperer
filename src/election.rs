@@ -1,4 +1,3 @@
-use std::random::random;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -249,7 +248,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
         let owner: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         loop {
-            let timer = sleep(Duration::from_secs(RENEW_TIME));
+            let timer = sleep(Duration::from_secs(RENEW_TIME as u64));
             let deleted = await_condition(api.clone(), LOCK_NAME, |lease: Option<&Lease>| {
                 lease.is_none()
             });
