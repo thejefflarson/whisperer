@@ -153,7 +153,11 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                 .and_then(|it| it.holder_identity.clone())
             {
                 if leader != hostname {
-                    info!("{leader} is leading, I was leading, but no longer. I am {hostname}");
+                    if matches!(state, State::Standby) {
+                        info!("{leader} is leading. I am {hostname}");
+                    } else {
+                        info!("{hostname} lost lease, {leader} is now leading");
+                    }
                     Ok(State::Following { leader })
                 } else {
                     // renew lease
