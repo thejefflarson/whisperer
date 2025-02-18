@@ -1,3 +1,4 @@
+use std::random::random;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -76,6 +77,7 @@ fn get_hostname() -> String {
 }
 
 const LEASE_TIME: i32 = 15;
+const RENEW_TIME: i32 = LEASE_TIME / 3;
 #[instrument]
 async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     let generations = change
@@ -164,13 +166,15 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                     acquire(state, api, Some(lease)).await
                 }
             } else {
-                // no name? Try and grab it!
+                // um, bizarre? no name? no spec? Try and grab it!
                 acquire(state, api, Some(lease)).await
             }
         }
         State::Following { .. } => {
             if let Some(spec) = lease.spec.clone() {
                 if spec.renew_time.map_or(true, |it| it.0 < Utc::now()) {
+                    // jitter for less than 255 milliseconds to reduce contention
+                    sleep(Duration::from_millis(rand::random::<u8>().into())).await;
                     // try and grab it!
                     acquire(state, api, Some(lease)).await
                 } else {
@@ -183,12 +187,12 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                             acquire(state, api, Some(lease)).await
                         }
                     } else {
-                        // no leader? Let's grab it.
+                        // something is really wrong, no leader? Let's grab it.
                         acquire(state, api, Some(lease)).await
                     }
                 }
             } else {
-                // no spec? Try and grab it!
+                // how would this even happen, no spec? Try and grab it!
                 acquire(state, api, Some(lease)).await
             }
         }
@@ -245,7 +249,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
         let owner: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         loop {
-            let timer = sleep(Duration::from_secs(5));
+            let timer = sleep(Duration::from_secs(RENEW_TIME));
             let deleted = await_condition(api.clone(), LOCK_NAME, |lease: Option<&Lease>| {
                 lease.is_none()
             });
