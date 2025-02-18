@@ -28,6 +28,10 @@ pub enum Error {
     Channel(#[source] error::RecvError),
     #[error("Watch error: {0}")]
     Watch(#[source] wait::Error),
+    #[error("Could not create lease: {0}")]
+    CreateLease(#[source] kube::Error),
+    #[error("Could not get lease: {0}")]
+    GetLease(#[source] kube::Error),
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

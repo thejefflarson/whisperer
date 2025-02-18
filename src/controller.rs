@@ -307,7 +307,10 @@ pub async fn run(metrics: MetricState) {
 
 #[cfg(test)]
 mod test {
-    use crate::metrics::MetricState;
+    use crate::{
+        election::{LeaderState, State},
+        metrics::MetricState,
+    };
 
     use super::{apply, cleanup, Context, ACTIVE_LABEL, NAMESPACE_ANNOTATION, WHISPER_LABEL};
     use k8s_openapi::{
@@ -323,6 +326,7 @@ mod test {
     use opentelemetry_sdk::metrics::SdkMeterProvider;
     use prometheus::Registry;
     use std::{collections::BTreeMap, env, sync::Arc};
+    use tokio::sync::watch;
 
     #[tokio::test]
     #[ignore = "uses k8s api"]
@@ -398,10 +402,12 @@ mod test {
         let meter = provider.meter("whisperer");
 
         let metrics = MetricState::new(registry, meter);
+        let (_, rx) = watch::channel(State::Leading);
         let data = Arc::new(Context {
             client: client.clone(),
             recorder,
             metrics,
+            state: LeaderState::new(rx),
         });
 
         let secret = Arc::new(items.first().unwrap().to_owned());
