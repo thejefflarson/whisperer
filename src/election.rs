@@ -13,7 +13,7 @@ use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{info, instrument, warn};
 
 use crate::error::{Error, Result};
 
@@ -76,6 +76,7 @@ fn get_hostname() -> String {
 }
 
 const LEASE_TIME: i32 = 15;
+#[instrument]
 async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     let generations = change
         .and_then(|lease| lease.spec)
@@ -88,7 +89,7 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
             ..Default::default()
         },
         spec: Some(LeaseSpec {
-            holder_identity: Some(hostname),
+            holder_identity: Some(hostname.clone()),
             lease_duration_seconds: Some(LEASE_TIME),
             acquire_time: Some(MicroTime(Utc::now())),
             lease_transitions: Some(generations),
@@ -103,9 +104,11 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
         )
         .await
         .map_err(Error::CreateLease)?;
+    info!("{hostname} proposed to lead");
     Ok(State::Leading)
 }
 
+#[instrument]
 async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     if change.is_none() {
         return acquire(state, api, change).await;
@@ -119,8 +122,10 @@ async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Resu
         .and_then(|it| it.holder_identity.clone())
     {
         if leader == hostname {
+            info!("{hostname} is confirmed as leader");
             Ok(State::Leading)
         } else {
+            info!("{leader} is leader. I am {hostname}");
             Ok(State::Following { leader })
         }
     } else {
@@ -129,6 +134,7 @@ async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Resu
     }
 }
 
+#[instrument]
 async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     if change.is_some() {
         unreachable!("called renew with a change");
@@ -147,6 +153,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                 .and_then(|it| it.holder_identity.clone())
             {
                 if leader != hostname {
+                    info!("{leader} is leading, I was leading, but no longer. I am {hostname}");
                     Ok(State::Following { leader })
                 } else {
                     // renew lease
@@ -165,6 +172,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                 } else {
                     if let Some(leader) = spec.holder_identity {
                         if leader != hostname {
+                            info!("{leader} is continuing to lead. I am {hostname}");
                             Ok(State::Following { leader })
                         } else {
                             // not sure this would ever happen? renew it

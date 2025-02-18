@@ -87,7 +87,7 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
 ///    in that namespace with child labels, delete those secrets.
 /// 2. Loop through the namespaces listed in the secret's target annotation and whisper secrets
 ///    from the provided parent secret.
-#[instrument(skip(ctx))]
+#[instrument(skip(ctx, secret))]
 async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> {
     let labels = secret.labels();
     let name = secret.name_any();
@@ -176,7 +176,7 @@ async fn delete(name: String, namespace: String, ctx: Arc<Context>) -> Result<()
 /// 1. Delete the `secret.`
 /// 2. Delete child secrets in namespaces in the secret's annotation.
 /// 3. Delete secrets that reference the `secret` but aren't in the annotation's namespace list, just in case.
-#[instrument(skip(ctx))]
+#[instrument(skip(ctx, secret))]
 async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
