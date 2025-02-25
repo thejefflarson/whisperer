@@ -384,6 +384,8 @@ mod test {
         let api = Api::<Secret>::all(client.clone());
         let items = api.list(&lp).await.unwrap().items;
         assert!(items.len() == 1, "secret created");
+
+        // TODO: make this a method
         let recorder = Recorder::new(
             client.clone(),
             Reporter {
@@ -391,8 +393,6 @@ mod test {
                 instance: env::var("CONTROLLER_POD_NAME").ok(),
             },
         );
-
-        // TODO: make this a method
         let registry = Registry::new();
         let exporter = opentelemetry_prometheus::exporter()
             .with_registry(registry.clone())

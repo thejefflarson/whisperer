@@ -17,7 +17,7 @@ use tracing::{info, instrument, warn};
 
 use crate::error::{Error, Result};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum State {
     Leading,
     Following { leader: String },
@@ -111,6 +111,7 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
 
 #[instrument]
 async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
+    // it's been deleted
     if change.is_none() {
         return acquire(state, api, change).await;
     }
@@ -131,7 +132,7 @@ async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Resu
         }
     } else {
         // hm missing holder_identity, try to acquire
-        acquire(state, api, change.clone()).await
+        acquire(state, api, None).await
     }
 }
 
@@ -326,4 +327,99 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
     };
     let state = LeaderState::new(state_rx);
     (state, lock)
+}
+
+#[cfg(test)]
+mod test {
+    use httpmock::prelude::*;
+    use httpmock::{Then, When};
+    use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
+    use kube::{Api, Client, Config};
+    use serde_json::json;
+
+    use crate::election::get_hostname;
+
+    use super::{new_owner, State};
+
+    #[tokio::test]
+    async fn test_new_owner() {
+        let server = MockServer::start_async().await;
+
+        let _mock = server.mock(|when: When, then: Then| {
+            when.any_request();
+            then.status(200).json_body(json!(Lease::default()));
+        });
+        let client = Client::try_from(Config::new(server.url("/").parse().unwrap())).unwrap();
+        let namespace = client.default_namespace();
+        let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+
+        let leader = get_hostname();
+        let state = new_owner(
+            State::Following {
+                leader: leader.clone(),
+            },
+            api.clone(),
+            Some(Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(leader),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(state, State::Leading);
+
+        let state = new_owner(
+            State::Leading,
+            api,
+            Some(Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(String::from("other")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            state,
+            State::Following {
+                leader: String::from("other")
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_renew() {
+        let server = MockServer::start_async().await;
+
+        let mock = server.mock(|when: When, then: Then| {
+            when.any_request();
+            then.status(200).json_body(json!(Lease::default()));
+        });
+
+        let recorder = MockServer::start_async().await;
+        recorder.forward_to(server.base_url(), |rule| {
+            rule.filter(|when| {
+                when.any_request(); // Record all requests
+            });
+        });
+        let recording = server.record(|rule| {
+            rule.filter(|when| {
+                when.any_request(); // Record all requests
+            });
+        });
+
+        let client = Client::try_from(Config::new(recorder.url("/").parse().unwrap())).unwrap();
+        let namespace = client.default_namespace();
+        let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+        let _ = recording
+            .save_to_async("recordings", "new_owner")
+            .await
+            .unwrap();
+        mock.assert();
+    }
 }

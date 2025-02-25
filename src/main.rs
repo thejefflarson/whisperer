@@ -4,7 +4,6 @@ use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _};
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_sdk::{
     metrics::SdkMeterProvider,
-    runtime,
     trace::{RandomIdGenerator, SdkTracerProvider},
 };
 use prometheus::Registry;
@@ -15,7 +14,7 @@ use whisperer::{
     server::serve as server,
 };
 
-// NEAT! Ensure that we have a valid port
+// Ensure that we have a valid port
 fn port(var: &str) -> u16 {
     env::var(var)
         .expect(&format!("{var} not defined"))
