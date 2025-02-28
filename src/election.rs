@@ -171,9 +171,15 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
             let should_attempt_acquisition = lease
                 .spec
                 .clone()
-                .and_then(|spec| spec.renew_time)
-                // true because there's no renew time?
-                .map_or(true, |time| time.0 < Utc::now());
+                .and_then(|spec| Some((spec.renew_time, spec.lease_duration_seconds)))
+                .and_then(|pair| match pair {
+                    (Some(microtime), Some(seconds)) => {
+                        Some(microtime.0 + Duration::from_secs(seconds as u64))
+                    }
+                    (Some(microtime), None) => Some(microtime.0),
+                    _ => None,
+                })
+                .map_or(true, |time| time < Utc::now());
 
             if should_attempt_acquisition {
                 // Add jitter to reduce contention
@@ -457,7 +463,7 @@ mod test {
             }
         );
         // test standby -> following
-        let state = renew(State::Standby, api, None).await.unwrap();
+        let state = renew(State::Standby, api.clone(), None).await.unwrap();
         assert_eq!(
             state,
             State::Following {
@@ -467,7 +473,91 @@ mod test {
         mock.assert_calls(2);
         mock.delete();
         // test following -> leading
+        // case 1. no expires
+        let mut mock = server.mock(|when: When, then: Then| {
+            when.method(GET).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some("not-us".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
 
+        let mut patch = server.mock(|when, then| {
+            when.method(PATCH).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(get_hostname().to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+        let state = renew(
+            State::Following {
+                leader: "not-us".to_string(),
+            },
+            api.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state, State::Leading);
+        mock.assert();
+        mock.delete();
+        patch.assert();
+        patch.delete();
+        // case 2. expired
+        let mut mock = server.mock(|when: When, then: Then| {
+            when.method(GET).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some("not-us".to_string()),
+
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+
+        let mut patch = server.mock(|when, then| {
+            when.method(PATCH).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(get_hostname().to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+        let state = renew(
+            State::Following {
+                leader: "not-us".to_string(),
+            },
+            api.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state, State::Leading);
+        mock.assert();
+        mock.delete();
+        patch.assert();
+        patch.delete();
         // test standby -> leading
 
         // test leading -> leading
