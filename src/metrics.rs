@@ -43,7 +43,7 @@ impl Metrics {
                 .build(),
             duration: meter
                 .f64_histogram("duration")
-                .with_description("duration of reciliation attempts")
+                .with_description("duration of reconciliation attempts")
                 .with_unit("ms")
                 .build(),
         }

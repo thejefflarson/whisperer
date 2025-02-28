@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
         .with(otel)
         .with(fmt::layer().with_filter(filter))
         .init();
-    // open question: how do I merge this with what's happening above?
+
     let registry = Registry::default();
     let exporter = opentelemetry_prometheus::exporter()
         .with_registry(registry.clone())

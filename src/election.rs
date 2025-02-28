@@ -31,8 +31,8 @@ impl State {
 
     fn leader(&self) -> String {
         match &self {
-            State::Leading { .. } => get_hostname(),
-            State::Following { leader, .. } => leader.clone(),
+            State::Leading => get_hostname(),
+            State::Following { leader } => leader.clone(),
             State::Standby => String::from("unknown"),
         }
     }
@@ -80,7 +80,7 @@ fn get_hostname() -> String {
 
 const LEASE_TIME: i32 = 15;
 const RENEW_TIME: i32 = LEASE_TIME / 3;
-#[instrument]
+#[instrument(skip(api, change))]
 async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     let generations = change
         .clone()
@@ -114,11 +114,11 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
         )
         .await
         .map_err(Error::CreateLease)?;
-    info!("{hostname} proposed to lead");
+    info!("{hostname} is leading");
     Ok(State::Leading)
 }
 
-#[instrument]
+#[instrument(skip(api, change))]
 async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     // it's been deleted
     if change.is_none() {
@@ -145,7 +145,7 @@ async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Resu
     }
 }
 
-#[instrument]
+#[instrument(skip(api, change))]
 async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     if change.is_some() {
         unreachable!("called renew with a change");
@@ -206,6 +206,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
     }
 }
 
+const BACKOFF: u64 = 30;
 async fn handle_lease_operation<F, Fut>(
     current_state: State,
     api: Api<Lease>,
@@ -222,6 +223,7 @@ where
         Ok(lease) => lease,
         Err(err) => {
             warn!(error = ?err, context = context, "Lease operation failed");
+            sleep(Duration::from_secs(BACKOFF)).await;
             return current_state;
         }
     };
@@ -231,6 +233,7 @@ where
         Ok(new_state) => new_state,
         Err(err) => {
             warn!(error = ?err, context = context, "State transition failed");
+            sleep(Duration::from_secs(BACKOFF)).await;
             current_state
         }
     }
@@ -378,7 +381,7 @@ mod test {
     use kube::{Api, Client, Config};
     use serde_json::json;
 
-    use crate::election::get_hostname;
+    use crate::election::{get_hostname, LEASE_TIME};
 
     use super::{new_owner, renew, State};
 
@@ -586,6 +589,7 @@ mod test {
                     lease_duration_seconds: Some(1),
                     acquire_time: Some(MicroTime(Utc::now() - Duration::from_secs(2))),
                     renew_time: Some(MicroTime(Utc::now() - Duration::from_secs(2))),
+                    lease_transitions: Some(0),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -594,12 +598,22 @@ mod test {
         });
 
         let patch = server.mock(|when, then| {
+            let patch = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(get_hostname().to_string()),
+                    lease_duration_seconds: Some(LEASE_TIME),
+                    lease_transitions: Some(1),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
             when.method(PATCH).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
-            ); // todo test the body is the right shape too
+            ).json_body_includes(json!(patch).to_string());
             let lease = Lease {
                 spec: Some(LeaseSpec {
                     holder_identity: Some(get_hostname().to_string()),
+                    lease_transitions: Some(1),
                     ..Default::default()
                 }),
                 ..Default::default()
