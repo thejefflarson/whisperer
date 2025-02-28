@@ -362,9 +362,13 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use httpmock::prelude::*;
     use httpmock::{Then, When};
     use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
+    use k8s_openapi::chrono::Utc;
     use kube::{Api, Client, Config};
     use serde_json::json;
 
@@ -421,28 +425,25 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_renew() {
+    async fn create_server() -> (MockServer, Api<Lease>) {
         let server = MockServer::start_async().await;
+        let client = Client::try_from(Config::new(server.url("/").parse().unwrap())).unwrap();
+        let namespace = client.default_namespace();
+        let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+        (server, api)
+    }
 
-        let recorder = MockServer::start_async().await;
-        recorder.forward_to(server.base_url(), |rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
+    #[tokio::test]
+    async fn test_leading_following() {
+        let (server, api) = create_server().await;
         let recording = server.record(|rule| {
             rule.filter(|when| {
                 when.any_request(); // Record all requests
             });
         });
 
-        let client = Client::try_from(Config::new(recorder.url("/").parse().unwrap())).unwrap();
-        let namespace = client.default_namespace();
-        let api = Api::<Lease>::namespaced(client.clone(), &namespace);
-
         // test leading -> following
-        let mut mock = server.mock(|when: When, then: Then| {
+        let mock = server.mock(|when: When, then: Then| {
             when.method(GET).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
             );
@@ -462,7 +463,35 @@ mod test {
                 leader: "not-us".to_string()
             }
         );
-        // test standby -> following
+        mock.assert();
+        let _ = recording
+            .save_to_async("recordings", "leading_following")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    /// test standby -> following
+    async fn test_standby_to_following() {
+        let (server, api) = create_server().await;
+        let recording = server.record(|rule| {
+            rule.filter(|when| {
+                when.any_request(); // Record all requests
+            });
+        });
+        let mock = server.mock(|when: When, then: Then| {
+            when.method(GET).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some("not-us".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
         let state = renew(State::Standby, api.clone(), None).await.unwrap();
         assert_eq!(
             state,
@@ -470,101 +499,124 @@ mod test {
                 leader: "not-us".to_string()
             }
         );
-        mock.assert_calls(2);
-        mock.delete();
-        // test following -> leading
-        // case 1. no expires
-        let mut mock = server.mock(|when: When, then: Then| {
-            when.method(GET).path(
-                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
-            );
-            let lease = Lease {
-                spec: Some(LeaseSpec {
-                    holder_identity: Some("not-us".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            then.status(200).json_body(json!(lease));
-        });
-
-        let mut patch = server.mock(|when, then| {
-            when.method(PATCH).path(
-                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
-            );
-            let lease = Lease {
-                spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            then.status(200).json_body(json!(lease));
-        });
-        let state = renew(
-            State::Following {
-                leader: "not-us".to_string(),
-            },
-            api.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(state, State::Leading);
         mock.assert();
-        mock.delete();
-        patch.assert();
-        patch.delete();
-        // case 2. expired
-        let mut mock = server.mock(|when: When, then: Then| {
-            when.method(GET).path(
-                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
-            );
-            let lease = Lease {
-                spec: Some(LeaseSpec {
-                    holder_identity: Some("not-us".to_string()),
-
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            then.status(200).json_body(json!(lease));
-        });
-
-        let mut patch = server.mock(|when, then| {
-            when.method(PATCH).path(
-                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
-            );
-            let lease = Lease {
-                spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            then.status(200).json_body(json!(lease));
-        });
-        let state = renew(
-            State::Following {
-                leader: "not-us".to_string(),
-            },
-            api.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(state, State::Leading);
-        mock.assert();
-        mock.delete();
-        patch.assert();
-        patch.delete();
-        // test standby -> leading
-
-        // test leading -> leading
-
         let _ = recording
-            .save_to_async("recordings", "renew")
+            .save_to_async("recordings", "standby_following")
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    /// test promotion to leading with a malformed lease
+    async fn test_following_to_leading_malformed() {
+        let (server, api) = create_server().await;
+        let recording = server.record(|rule| {
+            rule.filter(|when| {
+                when.any_request(); // Record all requests
+            });
+        });
+        // case 1. no expires
+        let mock = server.mock(|when: When, then: Then| {
+            when.method(GET).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some("not-us".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+
+        let patch = server.mock(|when, then| {
+            when.method(PATCH).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(get_hostname().to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+        let state = renew(
+            State::Following {
+                leader: "not-us".to_string(),
+            },
+            api.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state, State::Leading);
+        mock.assert();
+        patch.assert();
+        let _ = recording
+            .save_to_async("recordings", "following_to_leading_malformed")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_following_to_leading() {
+        let (server, api) = create_server().await;
+        let recording = server.record(|rule| {
+            rule.filter(|when| {
+                when.any_request(); // Record all requests
+            });
+        });
+        // case 2. expired
+        let mock = server.mock(|when: When, then: Then| {
+            when.method(GET).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some("not-us".to_string()),
+                    lease_duration_seconds: Some(1),
+                    acquire_time: Some(MicroTime(Utc::now() - Duration::from_secs(2))),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+
+        let patch = server.mock(|when, then| {
+            when.method(PATCH).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some(get_hostname().to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+        let state = renew(
+            State::Following {
+                leader: "not-us".to_string(),
+            },
+            api.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(state, State::Leading);
+        mock.assert();
+        patch.assert();
+        let _ = recording
+            .save_to_async("recordings", "following_to_leading")
+            .await
+            .unwrap();
+    }
+    // test standby -> leading
+
+    // test leading -> leading
 }
