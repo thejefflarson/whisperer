@@ -32,6 +32,8 @@ pub enum Error {
     CreateLease(#[source] kube::Error),
     #[error("Could not get lease: {0}")]
     GetLease(#[source] kube::Error),
+    #[error("Could not send")]
+    ChannelSend,
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 

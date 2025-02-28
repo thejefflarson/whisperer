@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::{prelude::*, TryFutureExt};
+use futures::prelude::*;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
 use k8s_openapi::chrono::Utc;
@@ -46,9 +46,12 @@ pub(crate) struct LeaderLock {
 
 impl LeaderLock {
     // Effectively destroys this lock, at somepoint this will be an AsyncDrop
-    pub async fn retire(self) -> impl Future<Output = Result<Result<()>>> {
-        let _ = self.cancel.send(());
-        self.handle.map_err(Error::Lock)
+    pub async fn retire(self) -> Result<()> {
+        self.cancel.send(()).map_err(|_| Error::ChannelSend)?;
+        match self.handle.await {
+            Ok(result) => result,
+            Err(join_error) => Err(Error::Lock(join_error)),
+        }
     }
 }
 
@@ -169,6 +172,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                 .spec
                 .clone()
                 .and_then(|spec| spec.renew_time)
+                // true because there's no renew time?
                 .map_or(true, |time| time.0 < Utc::now());
 
             if should_attempt_acquisition {
@@ -179,7 +183,8 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                 info!("{leader} is continuing to lead. I am {hostname}");
                 Ok(State::Following { leader })
             } else {
-                // This case is rare but possible - we thought we were following but actually we're the leader
+                // This case is rare but possible - we thought we were following but actually we're
+                // the leader, or maybe our lease is gone?
                 acquire(state, api, Some(lease)).await
             }
         }
@@ -219,7 +224,7 @@ where
     }
 }
 
-async fn transition_state<F, Fut>(
+async fn transition<F, Fut>(
     current_state: State,
     api: Api<Lease>,
     lease_result: Result<Option<Lease>>,
@@ -279,7 +284,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
             });
             select! {
                 change = deleted => {
-                    let (new_state, changed) = transition_state(
+                    let (new_state, changed) = transition(
                         state,
                         api.clone(),
                         change.map_err(Error::Watch),
@@ -288,11 +293,11 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                     ).await;
                     state = new_state;
                     if changed {
-                        state_tx.send(state.clone()).unwrap();
+                        state_tx.send(state.clone()).map_err(|_| Error::ChannelSend)?;
                     }
                 },
                 change = owner_changed => {
-                    let (new_state, changed) = transition_state(
+                    let (new_state, changed) = transition(
                         state,
                         api.clone(),
                         change.map_err(Error::Watch),
@@ -301,11 +306,11 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                     ).await;
                     state = new_state;
                     if changed {
-                        state_tx.send(state.clone()).unwrap();
+                        state_tx.send(state.clone()).map_err(|_| Error::ChannelSend)?;
                     }
                 },
                 _ = timer => {
-                    let (new_state, changed) = transition_state(
+                    let (new_state, changed) = transition(
                         state,
                         api.clone(),
                         Ok(None),
@@ -314,7 +319,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                     ).await;
                     state = new_state;
                     if changed {
-                        state_tx.send(state.clone()).unwrap();
+                        state_tx.send(state.clone()).map_err(|_| Error::ChannelSend)?;
                     }
                 }
                 // we're done here
@@ -323,8 +328,6 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
         }
         // we're shutting down, cleanup our lease
         if let State::Leading { .. } = state {
-            let hn = gethostname::gethostname().into_string();
-            let hostname = hn.unwrap_or(String::from("unknown"));
             let pp = PatchParams::default();
             let patch = Patch::Apply(Lease {
                 spec: Some(LeaseSpec {
@@ -334,10 +337,12 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                 ..Default::default()
             });
             let _ = api
-                .patch(&hostname, &pp, &patch)
+                .patch(&LOCK_NAME, &pp, &patch)
                 .await
                 .map_err(Error::Patch)?;
-            let _ = state_tx.send(State::Standby);
+            state_tx
+                .send(State::Standby)
+                .map_err(|_| Error::ChannelSend)?;
         };
         Ok(())
     });
@@ -371,7 +376,6 @@ mod test {
         let client = Client::try_from(Config::new(server.url("/").parse().unwrap())).unwrap();
         let namespace = client.default_namespace();
         let api = Api::<Lease>::namespaced(client.clone(), &namespace);
-
         let leader = get_hostname();
         let state = new_owner(
             State::Following {
