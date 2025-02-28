@@ -339,13 +339,12 @@ mod test {
 
     use crate::election::get_hostname;
 
-    use super::{new_owner, State};
+    use super::{new_owner, renew, State};
 
     #[tokio::test]
     async fn test_new_owner() {
         let server = MockServer::start_async().await;
-
-        let _mock = server.mock(|when: When, then: Then| {
+        let _ = server.mock(|when: When, then: Then| {
             when.any_request();
             then.status(200).json_body(json!(Lease::default()));
         });
@@ -396,11 +395,6 @@ mod test {
     async fn test_renew() {
         let server = MockServer::start_async().await;
 
-        let mock = server.mock(|when: When, then: Then| {
-            when.any_request();
-            then.status(200).json_body(json!(Lease::default()));
-        });
-
         let recorder = MockServer::start_async().await;
         recorder.forward_to(server.base_url(), |rule| {
             rule.filter(|when| {
@@ -416,10 +410,47 @@ mod test {
         let client = Client::try_from(Config::new(recorder.url("/").parse().unwrap())).unwrap();
         let namespace = client.default_namespace();
         let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+
+        // test leading -> following
+        let mut mock = server.mock(|when: When, then: Then| {
+            when.method(GET).path(
+                "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
+            );
+            let lease = Lease {
+                spec: Some(LeaseSpec {
+                    holder_identity: Some("not-us".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            then.status(200).json_body(json!(lease));
+        });
+        let state = renew(State::Leading, api.clone(), None).await.unwrap();
+        assert_eq!(
+            state,
+            State::Following {
+                leader: "not-us".to_string()
+            }
+        );
+        // test standby -> following
+        let state = renew(State::Standby, api, None).await.unwrap();
+        assert_eq!(
+            state,
+            State::Following {
+                leader: "not-us".to_string()
+            }
+        );
+        mock.assert_calls(2);
+        mock.delete();
+        // test following -> leading
+
+        // test standby -> leading
+
+        // test leading -> leading
+
         let _ = recording
-            .save_to_async("recordings", "new_owner")
+            .save_to_async("recordings", "renew")
             .await
             .unwrap();
-        mock.assert();
     }
 }
