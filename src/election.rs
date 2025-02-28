@@ -141,88 +141,100 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
     if change.is_some() {
         unreachable!("called renew with a change");
     }
-    let lease = api.get_opt(LOCK_NAME).await.map_err(Error::GetLease)?;
-    let lease = match lease {
+    let lease = match api.get_opt(LOCK_NAME).await.map_err(Error::GetLease)? {
         Some(lease) => lease,
         None => return acquire(state, api, None).await,
     };
+    let current_leader = lease
+        .spec
+        .as_ref()
+        .and_then(|it| it.holder_identity.clone());
     let hostname = get_hostname();
-    match state {
-        State::Leading { .. } | State::Standby => {
-            if let Some(leader) = lease
+    match (state.clone(), current_leader) {
+        // If we're leading but someone else has the lease now
+        (State::Leading, Some(leader)) if leader != hostname => {
+            info!("{hostname} lost lease, {leader} is now leading");
+            Ok(State::Following { leader })
+        }
+
+        // If we're in standby and there's a leader
+        (State::Standby, Some(leader)) if leader != hostname => {
+            info!("{leader} is leading. I am {hostname}");
+            Ok(State::Following { leader })
+        }
+
+        // If we're following and should try to acquire the lease
+        (State::Following { .. }, Some(leader)) => {
+            let should_attempt_acquisition = lease
                 .spec
-                .as_ref()
-                .and_then(|it| it.holder_identity.clone())
-            {
-                if leader != hostname {
-                    if matches!(state, State::Standby) {
-                        info!("{leader} is leading. I am {hostname}");
-                    } else {
-                        info!("{hostname} lost lease, {leader} is now leading");
-                    }
-                    Ok(State::Following { leader })
-                } else {
-                    // renew lease
-                    acquire(state, api, Some(lease)).await
-                }
+                .clone()
+                .and_then(|spec| spec.renew_time)
+                .map_or(true, |time| time.0 < Utc::now());
+
+            if should_attempt_acquisition {
+                // Add jitter to reduce contention
+                sleep(Duration::from_millis(rand::random::<u8>().into())).await;
+                acquire(state, api, Some(lease)).await
+            } else if leader != hostname {
+                info!("{leader} is continuing to lead. I am {hostname}");
+                Ok(State::Following { leader })
             } else {
-                // um, bizarre? no name? no spec? Try and grab it!
+                // This case is rare but possible - we thought we were following but actually we're the leader
                 acquire(state, api, Some(lease)).await
             }
         }
-        State::Following { .. } => {
-            if let Some(spec) = lease.spec.clone() {
-                if spec.renew_time.map_or(true, |it| it.0 < Utc::now()) {
-                    // jitter for less than 255 milliseconds to reduce contention
-                    sleep(Duration::from_millis(rand::random::<u8>().into())).await;
-                    // try and grab it!
-                    acquire(state, api, Some(lease)).await
-                } else {
-                    if let Some(leader) = spec.holder_identity {
-                        if leader != hostname {
-                            info!("{leader} is continuing to lead. I am {hostname}");
-                            Ok(State::Following { leader })
-                        } else {
-                            // not sure this would ever happen? renew it
-                            acquire(state, api, Some(lease)).await
-                        }
-                    } else {
-                        // something is really wrong, no leader? Let's grab it.
-                        acquire(state, api, Some(lease)).await
-                    }
-                }
-            } else {
-                // how would this even happen, no spec? Try and grab it!
-                acquire(state, api, Some(lease)).await
-            }
-        }
+
+        // Default case: try to acquire the lease
+        _ => acquire(state, api, Some(lease)).await,
     }
 }
 
-async fn handle<F, Fut>(
-    state: State,
+async fn handle_lease_operation<F, Fut>(
+    current_state: State,
     api: Api<Lease>,
-    change: Result<Option<Lease>>,
+    lease_result: Result<Option<Lease>>,
     operation: F,
-    error_msg: &'static str,
+    context: &str,
 ) -> State
 where
     F: FnOnce(State, Api<Lease>, Option<Lease>) -> Fut,
     Fut: Future<Output = Result<State, Error>>,
 {
-    match change {
-        Ok(lease) => match operation(state.clone(), api, lease).await {
-            Ok(new_state) => new_state,
-            Err(e) => {
-                warn!(error = ?e, error_msg);
-                state
-            }
-        },
-        Err(e) => {
-            warn!(error = ?e, error_msg);
-            state
+    // Extract the lease or handle error and return current state
+    let lease = match lease_result {
+        Ok(lease) => lease,
+        Err(err) => {
+            warn!(error = ?err, context = context, "Lease operation failed");
+            return current_state;
+        }
+    };
+
+    // Perform the operation or handle error and return current state
+    match operation(current_state.clone(), api, lease).await {
+        Ok(new_state) => new_state,
+        Err(err) => {
+            warn!(error = ?err, context = context, "State transition failed");
+            current_state
         }
     }
+}
+
+async fn transition_state<F, Fut>(
+    current_state: State,
+    api: Api<Lease>,
+    lease_result: Result<Option<Lease>>,
+    operation: F,
+    context: &str,
+) -> (State, bool)
+where
+    F: FnOnce(State, Api<Lease>, Option<Lease>) -> Fut,
+    Fut: Future<Output = Result<State, Error>>,
+{
+    let new_state =
+        handle_lease_operation(current_state.clone(), api, lease_result, operation, context).await;
+
+    let changed = current_state != new_state;
+    (new_state, changed)
 }
 
 const LOCK_NAME: &str = "whisperer-controller-lock";
@@ -267,34 +279,43 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
             });
             select! {
                 change = deleted => {
-                    state = handle(
+                    let (new_state, changed) = transition_state(
                         state,
                         api.clone(),
                         change.map_err(Error::Watch),
                         acquire,
                         "Lease creation failed"
                     ).await;
-                    state_tx.send(state.clone()).unwrap();
+                    state = new_state;
+                    if changed {
+                        state_tx.send(state.clone()).unwrap();
+                    }
                 },
                 change = owner_changed => {
-                    state = handle(
+                    let (new_state, changed) = transition_state(
                         state,
                         api.clone(),
                         change.map_err(Error::Watch),
                         new_owner,
                         "Owner change operation failed"
                     ).await;
-                    state_tx.send(state.clone()).unwrap();
+                    state = new_state;
+                    if changed {
+                        state_tx.send(state.clone()).unwrap();
+                    }
                 },
                 _ = timer => {
-                    state = handle(
+                    let (new_state, changed) = transition_state(
                         state,
                         api.clone(),
                         Ok(None),
                         renew,
                         "Timer operation failed"
                     ).await;
-                    state_tx.send(state.clone()).unwrap();
+                    state = new_state;
+                    if changed {
+                        state_tx.send(state.clone()).unwrap();
+                    }
                 }
                 // we're done here
                 _ = &mut cancel_rx => break
@@ -316,8 +337,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                 .patch(&hostname, &pp, &patch)
                 .await
                 .map_err(Error::Patch)?;
-            state = State::Standby;
-            let _ = state_tx.send(state);
+            let _ = state_tx.send(State::Standby);
         };
         Ok(())
     });
