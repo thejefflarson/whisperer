@@ -83,9 +83,14 @@ const RENEW_TIME: i32 = LEASE_TIME / 3;
 #[instrument]
 async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     let generations = change
+        .clone()
         .and_then(|lease| lease.spec)
         .and_then(|spec| spec.lease_transitions)
         .map_or(0, |generation| generation + 1);
+    let acquire_time = change
+        .and_then(|lease| lease.spec)
+        .and_then(|spec| spec.acquire_time)
+        .map_or(MicroTime(Utc::now()), |time| time);
     let hostname = get_hostname();
     let new = Lease {
         metadata: ObjectMeta {
@@ -95,7 +100,8 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
         spec: Some(LeaseSpec {
             holder_identity: Some(hostname.clone()),
             lease_duration_seconds: Some(LEASE_TIME),
-            acquire_time: Some(MicroTime(Utc::now())),
+            acquire_time: Some(acquire_time),
+            renew_time: Some(MicroTime(Utc::now())),
             lease_transitions: Some(generations),
             ..Default::default()
         }),
@@ -465,7 +471,7 @@ mod test {
         );
         mock.assert();
         let _ = recording
-            .save_to_async("recordings", "leading_following")
+            .save_to_async("recordings", "leading_to_following")
             .await
             .unwrap();
     }
@@ -501,7 +507,7 @@ mod test {
         );
         mock.assert();
         let _ = recording
-            .save_to_async("recordings", "standby_following")
+            .save_to_async("recordings", "standby_to_following")
             .await
             .unwrap();
     }
@@ -589,7 +595,7 @@ mod test {
         let patch = server.mock(|when, then| {
             when.method(PATCH).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
-            );
+            ); // todo test the body is the right shape too
             let lease = Lease {
                 spec: Some(LeaseSpec {
                     holder_identity: Some(get_hostname().to_string()),
@@ -617,6 +623,5 @@ mod test {
             .unwrap();
     }
     // test standby -> leading
-
     // test leading -> leading
 }
