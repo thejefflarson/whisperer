@@ -90,7 +90,7 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
     let acquire_time = change
         .and_then(|lease| lease.spec)
         .and_then(|spec| spec.acquire_time)
-        .map_or(MicroTime(Utc::now()), |time| time);
+        .unwrap_or_else(|| MicroTime(Utc::now()));
     let hostname = get_hostname();
     let new = Lease {
         metadata: ObjectMeta {
