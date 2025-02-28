@@ -13,6 +13,8 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 jobs:
   rust:
+    permissions:
+      contents: read
     runs-on: whisperer-runners
     steps:
     - name: Enable rust

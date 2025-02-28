@@ -38,19 +38,18 @@ async fn main() -> anyhow::Result<()> {
         .with(otel)
         .with(fmt::layer().with_filter(filter))
         .init();
-
     // open question: how do I merge this with what's happening above?
-    let registry = Registry::new();
+    let registry = Registry::default();
     let exporter = opentelemetry_prometheus::exporter()
         .with_registry(registry.clone())
         .build()?;
     let provider = SdkMeterProvider::builder().with_reader(exporter).build();
     let meter = provider.meter("whisperer");
-
     let state = MetricState::new(registry, meter);
     let controller = run(state.clone());
     let server = server(server_port);
     let metrics = metrics(metrics_port, state);
+
     tokio::join!(controller, metrics, server).1?;
     Ok(())
 }

@@ -26,8 +26,10 @@ RUN --mount=type=cache,target=/app/target,sharing=locked \
 RUN --mount=type=cache,target=/app/target,sharing=locked \
     cp /app/target/release/whisperer ./whisperer
 
-FROM cgr.dev/chainguard/static
+FROM rust:latest
+RUN useradd nonroot
 COPY --from=builder --chown=nonroot:nonroot /app/whisperer /app/
 USER nonroot
+HEALTHCHECK NONE
 EXPOSE 8080
 ENTRYPOINT ["/app/whisperer"]

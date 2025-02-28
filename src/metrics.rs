@@ -3,6 +3,7 @@ use std::{
     time::SystemTime,
 };
 
+use crate::utils::shutdown_signal;
 use anyhow::{anyhow, Result};
 use axum::{
     extract::State,
@@ -133,5 +134,8 @@ pub async fn serve(port: u16, state: MetricState) -> Result<()> {
         .route("/metrics", get(metrics))
         .with_state(state.clone());
     let listener = TcpListener::bind(&format!("0.0.0.0:{port}")).await.unwrap();
-    axum::serve(listener, app).await.map_err(|e| anyhow!(e))
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|e| anyhow!(e))
 }
