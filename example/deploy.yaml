@@ -24,8 +24,8 @@ metadata:
   name: sync
   namespace: source
   labels:
-    secret-syncer.jeffl.es/sync: "true"
+    whisperer.jeffl.es/sync: "true"
   annotations:
-    secret-syncer.jeffl.es/namespaces: "target,target2,missing"
+    whisperer.jeffl.es/namespaces: "target,target2,missing"
 data:
   secret: dG90YWxseSBhIHN1cGVyIGR1cGVyIHNlY3JldCB5b3Ugc2hvdWxkbid0IHRlbGwgYW55b25lCg==

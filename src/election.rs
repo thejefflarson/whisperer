@@ -5,9 +5,10 @@ use futures::prelude::*;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
 use k8s_openapi::chrono::Utc;
-use kube::api::{ObjectMeta, Patch, PatchParams};
+use kube::api::{ObjectMeta, Patch, PatchParams, PostParams};
+use kube::runtime::predicates::resource_version;
 use kube::runtime::wait::await_condition;
-use kube::{Api, Client};
+use kube::{Api, Client, ResourceExt};
 use tokio::select;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::{oneshot, watch};
@@ -88,13 +89,19 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
         .and_then(|spec| spec.lease_transitions)
         .map_or(0, |generation| generation + 1);
     let acquire_time = change
+        .clone()
         .and_then(|lease| lease.spec)
         .and_then(|spec| spec.acquire_time)
         .unwrap_or_else(|| MicroTime(Utc::now()));
+    let resource_version = change
+        .clone()
+        .map(|lease| lease.metadata)
+        .and_then(|meta| meta.resource_version);
     let hostname = get_hostname();
     let new = Lease {
         metadata: ObjectMeta {
             name: Some(LOCK_NAME.to_string()),
+            resource_version,
             ..Default::default()
         },
         spec: Some(LeaseSpec {
@@ -106,14 +113,28 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
             ..Default::default()
         }),
     };
-    let _ = api
-        .patch(
+    if change.is_some() {
+        api.replace(
             LOCK_NAME,
-            &PatchParams::apply("whisperer.jeffl.es"),
-            &Patch::Apply(&new),
+            &PostParams {
+                dry_run: false,
+                field_manager: Some(String::from("whisperer.jeffl.es")),
+            },
+            &new,
         )
         .await
         .map_err(Error::CreateLease)?;
+    } else {
+        api.create(
+            &PostParams {
+                dry_run: false,
+                field_manager: Some(String::from("whisperer.jeffl.es")),
+            },
+            &new,
+        )
+        .await
+        .map_err(Error::CreateLease)?;
+    }
     info!("{hostname} is leading");
     Ok(State::Leading)
 }
@@ -263,19 +284,6 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let namespace = client.default_namespace();
     let api = Api::<Lease>::namespaced(client.clone(), &namespace);
-    // algorithm
-    // 1. Ensure the lease exists
-    //    a. if not publish Standby and create one with ourselves as a leader
-    //       i. publish Leader state to state_tx
-    //    b. if it exists and we're not the owner publish Following
-    // 2. loop
-    //    a. if we're leading renew the lease before the timeout eg every 5 seconds for a 15 second timeout
-    //    b. if not check again at jitter * timeout do routine 1.
-    // 3. set up a watcher to see if we somehow lose the lease in the meantime
-    // conditions to listen for:
-    // 1. lease is deleted
-    // 2. lease expires
-    // 3. lease changes owner
     let handle = tokio::spawn(async move {
         let mut state = State::Standby;
         let owner: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -378,6 +386,7 @@ mod test {
     use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
     use k8s_openapi::chrono::Utc;
+    use kube::api::ObjectMeta;
     use kube::{Api, Client, Config};
     use serde_json::json;
 
@@ -534,13 +543,16 @@ mod test {
                     holder_identity: Some("not-us".to_string()),
                     ..Default::default()
                 }),
-                ..Default::default()
+                metadata: ObjectMeta {
+                    resource_version: Some(String::from("1")),
+                    ..Default::default()
+                },
             };
             then.status(200).json_body(json!(lease));
         });
 
-        let patch = server.mock(|when, then| {
-            when.method(PATCH).path(
+        let put = server.mock(|when, then| {
+            when.method(PUT).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
             );
             let lease = Lease {
@@ -548,7 +560,10 @@ mod test {
                     holder_identity: Some(get_hostname().to_string()),
                     ..Default::default()
                 }),
-                ..Default::default()
+                metadata: ObjectMeta {
+                    resource_version: Some(String::from("1")),
+                    ..Default::default()
+                },
             };
             then.status(200).json_body(json!(lease));
         });
@@ -563,7 +578,7 @@ mod test {
         .unwrap();
         assert_eq!(state, State::Leading);
         mock.assert();
-        patch.assert();
+        put.assert();
         let _ = recording
             .save_to_async("recordings", "following_to_leading_malformed")
             .await
@@ -605,9 +620,12 @@ mod test {
                     lease_transitions: Some(1),
                     ..Default::default()
                 }),
-                ..Default::default()
+                metadata: ObjectMeta {
+                    resource_version: Some(String::from("1")),
+                    ..Default::default()
+                },
             };
-            when.method(PATCH).path(
+            when.method(PUT).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
             ).json_body_includes(json!(patch).to_string());
             let lease = Lease {
@@ -662,7 +680,7 @@ mod test {
         });
 
         let patch = server.mock(|when, then| {
-            when.method(PATCH).path(
+            when.method(PUT).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
             ); // todo test the body is the right shape too
             let lease = Lease {
@@ -708,7 +726,7 @@ mod test {
         });
 
         let patch = server.mock(|when, then| {
-            when.method(PATCH).path(
+            when.method(PUT).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
             ); // todo test the body is the right shape too
             let lease = Lease {

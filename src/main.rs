@@ -49,7 +49,6 @@ async fn main() -> anyhow::Result<()> {
     let controller = run(state.clone());
     let server = server(server_port);
     let metrics = metrics(metrics_port, state);
-
     tokio::join!(controller, metrics, server).1?;
     Ok(())
 }
