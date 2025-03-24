@@ -620,7 +620,6 @@ mod test {
                     ..Default::default()
                 }),
                 metadata: ObjectMeta {
-                    resource_version: Some(String::from("1")),
                     ..Default::default()
                 },
             };
@@ -644,15 +643,15 @@ mod test {
             api.clone(),
             None,
         )
-        .await
-        .unwrap();
-        assert_eq!(state, State::Leading);
-        mock.assert();
-        patch.assert();
+        .await;
+
         let _ = recording
             .save_to_async("recordings", "following_to_leading")
             .await
             .unwrap();
+        mock.assert();
+        patch.assert();
+        assert_eq!(state.unwrap(), State::Leading);
     }
 
     #[tokio::test]
