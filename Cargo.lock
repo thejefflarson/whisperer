@@ -1438,9 +1438,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32053dc495efad4d188c7b33cc7c02ef4a6e43038115348348876efd39a53cba"
 dependencies = [
  "k8s-openapi",
- "kube-client",
- "kube-core",
+ "kube-client 0.98.0",
+ "kube-core 0.98.0",
  "kube-runtime",
+]
+
+[[package]]
+name = "kube"
+version = "0.99.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a4eb20010536b48abe97fec37d23d43069bcbe9686adcf9932202327bc5ca6e"
+dependencies = [
+ "k8s-openapi",
+ "kube-client 0.99.0",
+ "kube-core 0.99.0",
 ]
 
 [[package]]
@@ -1465,10 +1476,44 @@ dependencies = [
  "hyper-util",
  "jsonpath-rust",
  "k8s-openapi",
- "kube-core",
+ "kube-core 0.98.0",
  "pem",
  "rustls",
  "rustls-pemfile",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.12",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
+name = "kube-client"
+version = "0.99.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fc2ed952042df20d15ac2fe9614d0ec14b6118eab89633985d4b36e688dccf1"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "either",
+ "futures",
+ "home",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-timeout",
+ "hyper-util",
+ "jsonpath-rust",
+ "k8s-openapi",
+ "kube-core 0.99.0",
+ "pem",
  "secrecy",
  "serde",
  "serde_json",
@@ -1499,14 +1544,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "kube-leader-election"
-version = "0.39.0"
+name = "kube-core"
+version = "0.99.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6384501f3e4f4e72442d89863bc2aaf90e27c12de721f4b694ccb6c37e6322ca"
+checksum = "ff0d0793db58e70ca6d689489183816cb3aa481673e7433dc618cf7e8007c675"
+dependencies = [
+ "chrono",
+ "form_urlencoded",
+ "http",
+ "k8s-openapi",
+ "serde",
+ "serde-value",
+ "serde_json",
+ "thiserror 2.0.12",
+]
+
+[[package]]
+name = "kube-leader-election"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527e943b809de1967bf0ce4fb21b3373b928bbc5114cbe273fe12bbecf68a696"
 dependencies = [
  "chrono",
  "k8s-openapi",
- "kube",
+ "kube 0.99.0",
  "log",
  "serde",
  "serde_json",
@@ -1531,7 +1592,7 @@ dependencies = [
  "json-patch",
  "jsonptr",
  "k8s-openapi",
- "kube-client",
+ "kube-client 0.98.0",
  "parking_lot",
  "pin-project",
  "serde",
@@ -3137,7 +3198,7 @@ dependencies = [
  "gethostname",
  "httpmock",
  "k8s-openapi",
- "kube",
+ "kube 0.98.0",
  "kube-leader-election",
  "opentelemetry 0.29.0",
  "opentelemetry-otlp",
