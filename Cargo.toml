@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = { version = "1.0.97", features = ["backtrace"] }
-axum = "0.8.1"
+axum = "0.8.3"
 dotenvy = "0.15.7"
 futures = "0.3.31"
 gethostname = "1.0.0"
