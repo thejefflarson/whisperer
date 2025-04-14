@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = { version = "1.0.97", features = ["backtrace"] }
+anyhow = { version = "1.0.98", features = ["backtrace"] }
 axum = "0.8.3"
 dotenvy = "0.15.7"
 futures = "0.3.31"
