@@ -227,38 +227,6 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
 }
 
 const BACKOFF: u64 = 30;
-async fn handle_lease_operation<F, Fut>(
-    current_state: State,
-    api: Api<Lease>,
-    lease_result: Result<Option<Lease>>,
-    operation: F,
-    context: &str,
-) -> State
-where
-    F: FnOnce(State, Api<Lease>, Option<Lease>) -> Fut,
-    Fut: Future<Output = Result<State, Error>>,
-{
-    // Extract the lease or handle error and return current state
-    let lease = match lease_result {
-        Ok(lease) => lease,
-        Err(err) => {
-            warn!(error = ?err, context = context, "Lease operation failed");
-            sleep(Duration::from_secs(BACKOFF)).await;
-            return current_state;
-        }
-    };
-
-    // Perform the operation or handle error and return current state
-    match operation(current_state.clone(), api, lease).await {
-        Ok(new_state) => new_state,
-        Err(err) => {
-            warn!(error = ?err, context = context, "State transition failed");
-            sleep(Duration::from_secs(BACKOFF)).await;
-            current_state
-        }
-    }
-}
-
 async fn transition<F, Fut>(
     current_state: State,
     api: Api<Lease>,
@@ -270,8 +238,27 @@ where
     F: FnOnce(State, Api<Lease>, Option<Lease>) -> Fut,
     Fut: Future<Output = Result<State, Error>>,
 {
-    let new_state =
-        handle_lease_operation(current_state.clone(), api, lease_result, operation, context).await;
+    let new_state = {
+        // Extract the lease or handle error and return current state
+        let lease = match lease_result {
+            Ok(lease) => lease,
+            Err(err) => {
+                warn!(error = ?err, context = context, "Lease operation failed");
+                sleep(Duration::from_secs(BACKOFF)).await;
+                return (current_state, false);
+            }
+        };
+
+        // Perform the operation or handle error and return current state
+        match operation(current_state.clone(), api, lease).await {
+            Ok(new_state) => new_state,
+            Err(err) => {
+                warn!(error = ?err, context = context, "State transition failed");
+                sleep(Duration::from_secs(BACKOFF)).await;
+                current_state.clone()
+            }
+        }
+    };
 
     let changed = current_state != new_state;
     (new_state, changed)
