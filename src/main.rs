@@ -25,7 +25,7 @@ fn port(var: &str) -> u16 {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    let server_port = port("SERVER_PORT");
+    let healthcheck_port = port("HEALTHCHECK_PORT");
     let metrics_port = port("METRICS_PORT");
     let exporter = SpanExporter::builder().with_http().build().unwrap();
     let tracer = SdkTracerProvider::builder()
