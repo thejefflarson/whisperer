@@ -9,7 +9,7 @@ async fn ruok() -> &'static str {
 }
 
 pub async fn serve(port: u16) -> Result<()> {
-    let app = Router::new().route("/ruok", get(health));
+    let app = Router::new().route("/ruok", get(ruok));
     let listener = TcpListener::bind(&format!("0.0.0.0:{port}")).await.unwrap();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
