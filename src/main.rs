@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let meter = provider.meter("whisperer");
     let state = MetricState::new(registry, meter);
     let controller = run(state.clone());
-    let server = server(server_port);
+    let server = server(healthcheck_port);
     let metrics = metrics(metrics_port, state);
     tokio::join!(controller, metrics, server).1?;
     Ok(())
