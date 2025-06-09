@@ -1,7 +1,7 @@
 use std::env;
 
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _};
-use opentelemetry_otlp::SpanExporter;
+use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
     metrics::SdkMeterProvider,
     trace::{RandomIdGenerator, SdkTracerProvider},
@@ -40,10 +40,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let registry = Registry::default();
-    let exporter = opentelemetry_prometheus::exporter()
-        .with_registry(registry.clone())
+    let exporter = MetricExporter::builder()
+        .with_http()
+        .with_protocol(Protocol::HttpBinary)
         .build()?;
-    let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+    let provider = SdkMeterProvider::builder()
+        .with_periodic_exporter(exporter)
+        .build();
     let meter = provider.meter("whisperer");
     let state = MetricState::new(registry, meter);
     let controller = run(state.clone());

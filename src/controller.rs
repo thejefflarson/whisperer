@@ -323,10 +323,11 @@ mod test {
         Api, Client,
     };
     use opentelemetry::metrics::MeterProvider;
+    use opentelemetry_otlp::{MetricExporter, Protocol, WithExportConfig};
     use opentelemetry_sdk::metrics::SdkMeterProvider;
-    use prometheus::Registry;
     use std::{collections::BTreeMap, env, sync::Arc};
     use tokio::sync::watch;
+    use tracing_subscriber::Registry;
 
     #[tokio::test]
     #[ignore = "uses k8s api"]
@@ -393,12 +394,18 @@ mod test {
                 instance: env::var("CONTROLLER_POD_NAME").ok(),
             },
         );
-        let registry = Registry::new();
-        let exporter = opentelemetry_prometheus::exporter()
-            .with_registry(registry.clone())
+        let registry = Registry::default();
+        let exporter = MetricExporter::builder()
+            .with_http()
+            .with_protocol(Protocol::HttpBinary)
             .build()
             .unwrap();
-        let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter)
+            .build();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter)
+            .build();
         let meter = provider.meter("whisperer");
 
         let metrics = MetricState::new(registry, meter);
