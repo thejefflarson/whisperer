@@ -3,7 +3,6 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::Result;
 use opentelemetry::{
     metrics::{Counter, Histogram, Meter},
     KeyValue,

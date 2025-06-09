@@ -6,7 +6,7 @@ use opentelemetry_sdk::{
     metrics::SdkMeterProvider,
     trace::{RandomIdGenerator, SdkTracerProvider},
 };
-use tracing_subscriber::{fmt, layer::SubscriberExt, prelude::*, EnvFilter, Registry};
+use tracing_subscriber::{fmt, layer::SubscriberExt, prelude::*, EnvFilter};
 use whisperer::{controller::run, metrics::MetricState, server::serve as server};
 
 // Ensure that we have a valid port
