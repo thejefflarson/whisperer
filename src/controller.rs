@@ -394,7 +394,6 @@ mod test {
                 instance: env::var("CONTROLLER_POD_NAME").ok(),
             },
         );
-        let registry = Registry::default();
         let exporter = MetricExporter::builder()
             .with_http()
             .with_protocol(Protocol::HttpBinary)
@@ -403,12 +402,9 @@ mod test {
         let provider = SdkMeterProvider::builder()
             .with_periodic_exporter(exporter)
             .build();
-        let provider = SdkMeterProvider::builder()
-            .with_periodic_exporter(exporter)
-            .build();
         let meter = provider.meter("whisperer");
 
-        let metrics = MetricState::new(registry, meter);
+        let metrics = MetricState::new(meter);
         let (_, rx) = watch::channel(State::Leading);
         let data = Arc::new(Context {
             client: client.clone(),

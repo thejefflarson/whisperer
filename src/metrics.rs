@@ -3,36 +3,24 @@ use std::{
     time::SystemTime,
 };
 
-use crate::utils::shutdown_signal;
-use anyhow::{anyhow, Result};
-use axum::{
-    extract::State,
-    http::{header, HeaderMap},
-    response::IntoResponse,
-    routing::get,
-    Router,
-};
+use anyhow::Result;
 use opentelemetry::{
     metrics::{Counter, Histogram, Meter},
     KeyValue,
 };
-use prometheus::{proto::MetricFamily, Encoder, Registry, TextEncoder};
-use tokio::net::TcpListener;
 
 // this file is neat! I'm proud of it.
 
 #[derive(Clone)]
 pub struct Metrics {
-    registry: Registry,
     reconciliations: Counter<u64>,
     failures: Counter<u64>,
     duration: Histogram<f64>,
 }
 
 impl Metrics {
-    pub fn new(registry: Registry, meter: Meter) -> Self {
+    pub fn new(meter: Meter) -> Self {
         Self {
-            registry,
             reconciliations: meter
                 .u64_counter("reconciliations")
                 .with_description("number of reconciliations performed")
@@ -56,9 +44,9 @@ pub struct MetricState {
 }
 
 impl MetricState {
-    pub fn new(registry: Registry, meter: Meter) -> Self {
+    pub fn new(meter: Meter) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Metrics::new(registry, meter))),
+            inner: Arc::new(RwLock::new(Metrics::new(meter))),
         }
     }
 
@@ -87,10 +75,6 @@ impl MetricState {
         }
     }
 
-    fn metrics(&self) -> Vec<MetricFamily> {
-        self.inner.read().unwrap().registry.gather()
-    }
-
     fn finish(&self, millis: f64, key: String, value: String) {
         self.inner
             .write()
@@ -116,26 +100,4 @@ impl Drop for Record {
             self.value.clone(),
         )
     }
-}
-
-// from https://github.com/open-telemetry/opentelemetry-rust/blob/main/opentelemetry-prometheus/examples/hyper.rs
-async fn metrics(State(state): State<MetricState>) -> impl IntoResponse {
-    let metrics = state.metrics();
-    let mut buffer = vec![];
-    let encoder = TextEncoder::new();
-    encoder.encode(&metrics, &mut buffer).unwrap();
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, encoder.format_type().parse().unwrap());
-    (headers, buffer)
-}
-
-pub async fn serve(port: u16, state: MetricState) -> Result<()> {
-    let app = Router::new()
-        .route("/metrics", get(metrics))
-        .with_state(state.clone());
-    let listener = TcpListener::bind(&format!("0.0.0.0:{port}")).await.unwrap();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|e| anyhow!(e))
 }

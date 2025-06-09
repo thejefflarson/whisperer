@@ -6,13 +6,8 @@ use opentelemetry_sdk::{
     metrics::SdkMeterProvider,
     trace::{RandomIdGenerator, SdkTracerProvider},
 };
-use prometheus::Registry;
-use tracing_subscriber::{fmt, layer::SubscriberExt, prelude::*, EnvFilter};
-use whisperer::{
-    controller::run,
-    metrics::{serve as metrics, MetricState},
-    server::serve as server,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, prelude::*, EnvFilter, Registry};
+use whisperer::{controller::run, metrics::MetricState, server::serve as server};
 
 // Ensure that we have a valid port
 fn port(var: &str) -> u16 {
@@ -26,7 +21,6 @@ fn port(var: &str) -> u16 {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let healthcheck_port = port("HEALTHCHECK_PORT");
-    let metrics_port = port("METRICS_PORT");
     let exporter = SpanExporter::builder().with_http().build().unwrap();
     let tracer = SdkTracerProvider::builder()
         .with_id_generator(RandomIdGenerator::default())
@@ -39,7 +33,6 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_filter(filter))
         .init();
 
-    let registry = Registry::default();
     let exporter = MetricExporter::builder()
         .with_http()
         .with_protocol(Protocol::HttpBinary)
@@ -48,10 +41,10 @@ async fn main() -> anyhow::Result<()> {
         .with_periodic_exporter(exporter)
         .build();
     let meter = provider.meter("whisperer");
-    let state = MetricState::new(registry, meter);
+    let state = MetricState::new(meter);
     let controller = run(state.clone());
     let server = server(healthcheck_port);
-    let metrics = metrics(metrics_port, state);
-    tokio::join!(controller, metrics, server).1?;
+    tokio::join!(controller, server).1?;
+    provider.shutdown()?;
     Ok(())
 }
