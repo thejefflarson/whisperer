@@ -327,7 +327,7 @@ mod test {
     use opentelemetry_sdk::metrics::SdkMeterProvider;
     use std::{collections::BTreeMap, env, sync::Arc};
     use tokio::sync::watch;
-    use tracing_subscriber::Registry;
+    
 
     #[tokio::test]
     #[ignore = "uses k8s api"]

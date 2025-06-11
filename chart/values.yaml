@@ -104,3 +104,5 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+otelEndpoint: http://localhost:4318

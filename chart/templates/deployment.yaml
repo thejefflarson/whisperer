@@ -63,6 +63,8 @@ spec:
           env:
             - name: HEALTHCHECK_PORT
               value: .Values.service.port
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otelEndpoint }}
       {{- with .Values.volumes }}
       volumes:
         {{- toYaml . | nindent 8 }}

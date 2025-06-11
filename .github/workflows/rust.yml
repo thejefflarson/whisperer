@@ -4,10 +4,10 @@ permissions:
   pull-requests: write
 on:
   push:
-    branches: [ "main" ]
-    tags: [ 'v*.*.*' ]
+    branches: ["main"]
+    tags: ['v*.*.*']
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
