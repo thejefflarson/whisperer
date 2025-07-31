@@ -43,7 +43,7 @@ jobs:
             if [ -z "${pkg:-}" ]; then
               break
             fi
-            helm push "${pkg}" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER}/charts"  &> push-metadata.txt
+            helm push "${pkg}" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER}/charts" &> push-metadata.txt
             CHART_DIGEST=$(awk '/Digest: /{print $2}' push-metadata.txt)
             cosign sign -y "ghcr.io/${GITHUB_REPOSITORY_OWNER}/charts@${CHART_DIGEST}"
           done
