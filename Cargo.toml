@@ -5,17 +5,17 @@ edition = "2024"
 
 [dependencies]
 anyhow = { version = "1.0.100", features = ["backtrace"] }
-axum = "0.8.4"
+axum = "0.8.5"
 dotenvy = "0.15.7"
 futures = "0.3.31"
 gethostname = "1.0.2"
 k8s-openapi = { version = "0.26.0", features = ["latest"] }
 kube = { version = "2.0.1", features = ["runtime", "config"] }
-opentelemetry = "0.30.0"
-opentelemetry-otlp = "0.30.0"
-opentelemetry_sdk = { version = "0.30.0", features = ["rt-tokio"] }
+opentelemetry = "0.31.0"
+opentelemetry-otlp = "0.31.0"
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 rand = "0.9.2"
-thiserror = "2.0.16"
+thiserror = "2.0.17"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 tracing = "0.1.41"
@@ -23,5 +23,5 @@ tracing-opentelemetry = "0.31.0"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "std"] }
 
 [dev-dependencies]
-httpmock = { version = "0.8.0-alpha.1", features = ["record"] }
+httpmock = { version = "0.8.0", features = ["record"] }
 serde_json = "1.0.145"
