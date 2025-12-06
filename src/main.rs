@@ -1,11 +1,10 @@
-use std::env;
-
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _};
 use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
     metrics::SdkMeterProvider,
     trace::{RandomIdGenerator, SdkTracerProvider},
 };
+use std::env;
 use tracing_subscriber::{fmt, layer::SubscriberExt, prelude::*, EnvFilter};
 use whisperer::{controller::run, metrics::MetricState, server::serve as server};
 

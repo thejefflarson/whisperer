@@ -31,9 +31,9 @@ struct Context {
 }
 
 impl Context {
-    async fn record(&self, notice: &Notice, ref_: &ObjectReference) -> Result<()> {
+    async fn record(&self, notice: &Notice, reference: &ObjectReference) -> Result<()> {
         self.recorder
-            .publish(notice, ref_)
+            .publish(notice, reference)
             .await
             .map_err(Error::Event)?;
         Ok(())
@@ -327,7 +327,6 @@ mod test {
     use opentelemetry_sdk::metrics::SdkMeterProvider;
     use std::{collections::BTreeMap, env, sync::Arc};
     use tokio::sync::watch;
-    
 
     #[tokio::test]
     #[ignore = "uses k8s api"]
