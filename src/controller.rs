@@ -35,8 +35,7 @@ impl Context {
         self.recorder
             .publish(notice, reference)
             .await
-            .map_err(Error::Event)?;
-        Ok(())
+            .map_err(Error::Event)
     }
 }
 
