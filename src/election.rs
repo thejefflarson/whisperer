@@ -4,7 +4,7 @@ use std::time::Duration;
 use futures::prelude::*;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use k8s_openapi::chrono::Utc;
+    use k8s_openapi::jiff::Timestamp;
 use kube::api::{ObjectMeta, Patch, PatchParams, PostParams};
 use kube::runtime::wait::await_condition;
 use kube::{Api, Client};
@@ -91,7 +91,7 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
         .clone()
         .and_then(|lease| lease.spec)
         .and_then(|spec| spec.acquire_time)
-        .unwrap_or_else(|| MicroTime(Utc::now()));
+        .unwrap_or_else(|| MicroTime(Timestamp::now()));
     let resource_version = change
         .clone()
         .map(|lease| lease.metadata)
@@ -107,7 +107,7 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
             holder_identity: Some(hostname.clone()),
             lease_duration_seconds: Some(LEASE_TIME),
             acquire_time: Some(acquire_time),
-            renew_time: Some(MicroTime(Utc::now())),
+            renew_time: Some(MicroTime(Timestamp::now())),
             lease_transitions: Some(generations),
             ..Default::default()
         }),
@@ -205,7 +205,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                     (Some(microtime), None) => Some(microtime.0),
                     _ => None,
                 })
-                .map_or(true, |time| time < Utc::now());
+                .map_or(true, |time| time < Timestamp::now());
 
             if should_attempt_acquisition {
                 // Add jitter to reduce contention
@@ -371,7 +371,7 @@ mod test {
     use httpmock::{Then, When};
     use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-    use k8s_openapi::chrono::Utc;
+use k8s_openapi::jiff::Timestamp;
     use kube::api::ObjectMeta;
     use kube::{Api, Client, Config};
     use serde_json::json;
@@ -588,8 +588,8 @@ mod test {
                 spec: Some(LeaseSpec {
                     holder_identity: Some("not-us".to_string()),
                     lease_duration_seconds: Some(1),
-                    acquire_time: Some(MicroTime(Utc::now() - Duration::from_secs(2))),
-                    renew_time: Some(MicroTime(Utc::now() - Duration::from_secs(2))),
+                    acquire_time: Some(MicroTime(Timestamp::now() - Duration::from_secs(2))),
+                    renew_time: Some(MicroTime(Timestamp::now() - Duration::from_secs(2))),
                     lease_transitions: Some(0),
                     ..Default::default()
                 }),
