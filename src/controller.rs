@@ -139,7 +139,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
     // is idempotent
     for ns in intersection {
         let api: Api<Secret> = Api::namespaced(client.clone(), &ns);
-        let secret = (*secret).clone().dup(ns);
+        let secret = (*secret).clone().dup(ns.clone());
         let patch = Patch::Apply(&secret);
         let res = api
             .patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
