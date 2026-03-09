@@ -47,8 +47,7 @@ impl SecretExt for Secret {
                 generate_name: meta.generate_name.clone(),
                 labels: Some(labels),
                 name: meta.name.clone(),
-                namespace: Some(ns.clone()),
-                self_link: meta.self_link.clone(),
+                namespace: Some(ns),
                 ..ObjectMeta::default()
             },
             string_data: self.string_data.clone(),

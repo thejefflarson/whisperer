@@ -20,7 +20,7 @@ fn port(var: &str) -> u16 {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let healthcheck_port = port("HEALTHCHECK_PORT");
-    let exporter = SpanExporter::builder().with_http().build().unwrap();
+    let exporter = SpanExporter::builder().with_http().build()?;
     let tracer = SdkTracerProvider::builder()
         .with_id_generator(RandomIdGenerator::default())
         .with_batch_exporter(exporter)

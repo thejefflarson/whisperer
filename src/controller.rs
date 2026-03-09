@@ -54,7 +54,7 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         .collect::<NSSet>();
     let annotations = secret.annotations();
     let wanted = if let Some(ns) = annotations.get(NAMESPACE_ANNOTATION) {
-        ns.split(",").map(String::from).collect::<NSSet>()
+        ns.split(",").map(|s| s.trim().to_string()).collect::<NSSet>()
     } else {
         let name = secret.name_any();
         let namespace = secret.namespace().unwrap_or(String::from(""));
@@ -138,8 +138,8 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
     // Patch and create new objects, this might happen multiple times, but we don't care because it
     // is idempotent
     for ns in intersection {
-        let api: Api<Secret> = Api::namespaced(client.clone(), &ns.clone());
-        let secret = (*secret).clone().dup(ns.clone());
+        let api: Api<Secret> = Api::namespaced(client.clone(), &ns);
+        let secret = (*secret).clone().dup(ns);
         let patch = Patch::Apply(&secret);
         let res = api
             .patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
@@ -171,6 +171,7 @@ async fn delete(name: String, namespace: String, ctx: Arc<Context>) -> Result<()
         .map_right(|_| info!("deleted secret {name} in {namespace}"));
     Ok(())
 }
+
 /// Does three things:
 /// 1. Delete the `secret.`
 /// 2. Delete child secrets in namespaces in the secret's annotation.
@@ -232,7 +233,7 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
 #[instrument(skip(ctx))]
 async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     if !ctx.state.is_leader() {
-        info!("{} is leader ignoring change", ctx.state.leader());
+        info!("not leader (leader is {}), ignoring change", ctx.state.leader());
         return Ok(Action::await_change());
     }
     let metrics = ctx.metrics.clone();

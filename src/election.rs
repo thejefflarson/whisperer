@@ -4,7 +4,7 @@ use std::time::Duration;
 use futures::prelude::*;
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-    use k8s_openapi::jiff::Timestamp;
+use k8s_openapi::jiff::Timestamp;
 use kube::api::{ObjectMeta, Patch, PatchParams, PostParams};
 use kube::runtime::wait::await_condition;
 use kube::{Api, Client};
@@ -371,7 +371,7 @@ mod test {
     use httpmock::{Then, When};
     use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
-use k8s_openapi::jiff::Timestamp;
+    use k8s_openapi::jiff::Timestamp;
     use kube::api::ObjectMeta;
     use kube::{Api, Client, Config};
     use serde_json::json;
