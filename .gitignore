@@ -19,4 +19,7 @@ recordings/
 
 *.orig
 .aider*
+
+# Environment files - never commit secrets or local config
 .env
+.env.*
