@@ -20,8 +20,8 @@ jobs:
     - name: Enable rust
       run: |
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-    - uses: actions/checkout@v6
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
     - name: Audit dependencies
       run: |
         cargo install cargo-audit --locked
@@ -40,27 +40,27 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Log into registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
         with:
           driver: remote
           endpoint: tcp://buildkit:1234
       - name: Build and push Docker image
         id: build-and-push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
