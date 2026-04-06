@@ -16,7 +16,7 @@ opentelemetry-otlp = "0.31.1"
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 rand = "0.10.0"
 thiserror = "2.0.18"
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.51.0", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tracing = "0.1.44"
 tracing-opentelemetry = "0.32.1"
