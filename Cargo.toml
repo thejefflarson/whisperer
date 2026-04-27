@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
-axum = "0.8.8"
+axum = "0.8.9"
 dotenvy = "0.15.7"
 futures = "0.3.32"
 gethostname = "1.1.0"
@@ -16,7 +16,7 @@ opentelemetry-otlp = "0.31.1"
 opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
 rand = "0.10.1"
 thiserror = "2.0.18"
-tokio = { version = "1.51.1", features = ["full"] }
+tokio = { version = "1.52.1", features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["sync"] }
 tracing = "0.1.44"
 tracing-opentelemetry = "0.32.1"
