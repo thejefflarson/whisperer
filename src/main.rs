@@ -20,6 +20,8 @@ fn port(var: &str) -> u16 {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let healthcheck_port = port("HEALTHCHECK_PORT");
+    let otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4318".to_string());
     let exporter = SpanExporter::builder().with_http().build()?;
     let tracer = SdkTracerProvider::builder()
         .with_id_generator(RandomIdGenerator::default())
@@ -32,6 +34,20 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_filter(filter))
         .init();
 
+    // Warn when OTLP is sent over plaintext HTTP to a non-loopback address;
+    // metric attributes include Kubernetes secret names and namespace values.
+    if !otlp_endpoint.starts_with("https://")
+        && !otlp_endpoint.contains("localhost")
+        && !otlp_endpoint.contains("127.0.0.1")
+    {
+        tracing::warn!(
+            endpoint = %otlp_endpoint,
+            "OTLP endpoint uses plaintext HTTP; metric attributes contain \
+             Kubernetes secret names and namespaces — set \
+             OTEL_EXPORTER_OTLP_ENDPOINT to an https:// URL in production \
+             to encrypt sensitive data in transit"
+        );
+    }
     let exporter = MetricExporter::builder()
         .with_http()
         .with_protocol(Protocol::HttpBinary)
