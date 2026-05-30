@@ -19,6 +19,12 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# RBAC: the operator needs cluster-wide access to Secrets and Namespaces, plus a
+# Lease in its own namespace for leader election. Disable only if you manage RBAC
+# out of band.
+rbac:
+  create: true
+
 # This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
 serviceAccount:
   # Specifies whether a service account should be created
