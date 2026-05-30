@@ -79,6 +79,12 @@ I'm glad you asked, the trick is in the labels and annotations on the secret its
 
 The label `whisperer.jeffl.es/sync` tells the operator to sync the secret to the comma separated namespaces in the annotation `whisperer.jeffl.es/namespaces`. (BTW, **whisperer** will complain about the `missing` namespace here, but if you create it, it'll eventually catch up, like in 300 seconds or so. That's a lot, but maybe that's on you for whispering to an imaginary friend? You do you.)
 
+**One catch: target namespaces have to opt in.** whisperer will only copy a secret into a namespace that has consented by carrying the label `whisperer.jeffl.es/allow-sync=true`. Namespaces without it — and the protected `kube-system`, `kube-public`, `kube-node-lease`, and the operator's own namespace — are skipped. That's what stops anyone who can create a Secret from whispering it into a namespace they don't own. Label your targets first:
+```
+$ kubectl label namespace target whisperer.jeffl.es/allow-sync=true
+$ kubectl label namespace target2 whisperer.jeffl.es/allow-sync=true
+```
+
 There are a couple other niceties as well. You can delete a synced secret and it'll come right back:
 ```
 $ kubectl delete secret -n target sync

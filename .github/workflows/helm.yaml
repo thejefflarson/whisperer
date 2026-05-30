@@ -25,6 +25,9 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # First-party installer verifies the cosign binary's own checksum.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
       - name: Run chart-releaser
         uses: helm/chart-releaser-action@cae68fefc6b5f367a0275617c9f83181ba54714f # v1
         env:
@@ -34,6 +37,7 @@ jobs:
           skip_upload: true
       - name: Push charts to GHCR
         run: |
+          set -euo pipefail
           shopt -s nullglob
           for pkg in .cr-release-packages/*; do
             if [ -z "${pkg:-}" ]; then
@@ -41,5 +45,7 @@ jobs:
             fi
             helm push "${pkg}" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER}/charts" &> push-metadata.txt
             CHART_DIGEST=$(awk '/Digest: /{print $2}' push-metadata.txt)
+            # Refuse to sign an empty/garbled ref if the push output format changes.
+            [[ "$CHART_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "missing/invalid chart digest: '$CHART_DIGEST'" >&2; cat push-metadata.txt >&2; exit 1; }
             cosign sign -y "ghcr.io/${GITHUB_REPOSITORY_OWNER}/charts@${CHART_DIGEST}"
           done

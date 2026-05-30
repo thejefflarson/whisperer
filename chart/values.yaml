@@ -10,8 +10,10 @@ image:
   repository: ghcr.io/thejefflarson/whisperer
   # This sets the pull policy for images.
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: latest
+  # Overrides the image tag whose default is the chart appVersion. Leave empty
+  # to pull the exact, cosign-signed version this chart was published for; a
+  # floating tag like "latest" would defeat that signature/digest pinning.
+  tag: ""
 
 # This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
 imagePullSecrets: []
@@ -44,16 +46,25 @@ podAnnotations: {}
 # For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
 podLabels: {}
 
-podSecurityContext: {}
-  # fsGroup: 2000
+# Hardened by default: this pod holds a token that can read and write Secrets
+# cluster-wide, so it runs as an unprivileged, non-root user with a read-only
+# root filesystem and no Linux capabilities to shrink the blast radius of any
+# compromise. Requires the image to be runnable as a non-root UID.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
-securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
 
 # This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
 service:

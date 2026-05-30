@@ -41,21 +41,70 @@ impl Context {
 
 type NSSet = HashSet<String>;
 
-/// Returns a list of existing namespaces from a secret's namespace annotation:
-/// whisperer.jeffl.es/namespaces. It is an error to sync a secret without the namespace
-/// annotation. Unknown namespaces are ignored.
+/// Namespaces that may never receive synced secrets, regardless of labels.
+/// Writing into these could let a tenant tamper with cluster-critical secrets.
+const PROTECTED_NAMESPACES: &[&str] = &["kube-system", "kube-public", "kube-node-lease"];
+
+/// True if `ns` must never be used as a sync target. Covers the well-known
+/// system namespaces plus the operator's own namespace (set via the
+/// `CONTROLLER_NAMESPACE` env var) so a tenant can't target the controller.
+fn is_protected_namespace(ns: &str) -> bool {
+    PROTECTED_NAMESPACES.contains(&ns)
+        || env::var("CONTROLLER_NAMESPACE").ok().as_deref() == Some(ns)
+}
+
+/// True only for secrets whisperer itself created: they carry the `whisper`
+/// marker label AND were last applied by our field manager. The labels alone
+/// are forgeable by any tenant, but `managedFields` is maintained by the API
+/// server, so requiring our manager prevents a crafted look-alike secret from
+/// tricking the operator into deleting a victim's data.
+fn is_managed_copy(secret: &Secret) -> bool {
+    let marked = secret
+        .labels()
+        .get(WHISPER_LABEL)
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let ours = secret.meta().managed_fields.as_ref().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|f| f.manager.as_deref() == Some(FIELD_MANAGER))
+    });
+    marked && ours
+}
+
+/// Resolve the set of namespaces a secret should be synced into.
+///
+/// The target list comes from the user-authored `whisperer.jeffl.es/namespaces`
+/// annotation, but a namespace is only an eligible target if it has explicitly
+/// opted in with `whisperer.jeffl.es/allow-sync=true` and is not protected.
+/// This consent check is the authorization boundary: without it any user who
+/// can create a Secret could copy data into namespaces they don't control.
+/// It is an error to sync a secret without the namespace annotation.
 async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet, Error> {
-    let namespaces = Api::<Namespace>::all(client.clone())
+    let all = Api::<Namespace>::all(client.clone())
         .list(&ListParams::default())
         .await
-        .map_err(Error::ListNamespaces)?
+        .map_err(Error::ListNamespaces)?;
+    let existing = all.iter().map(|ns| ns.name_any()).collect::<NSSet>();
+    let consenting = all
         .iter()
+        .filter(|ns| {
+            let name = ns.name_any();
+            !is_protected_namespace(&name)
+                && ns
+                    .labels()
+                    .get(ALLOW_SYNC_LABEL)
+                    .map(|v| v == "true")
+                    .unwrap_or(false)
+        })
         .map(|ns| ns.name_any())
         .collect::<NSSet>();
+
     let annotations = secret.annotations();
     let wanted = if let Some(ns) = annotations.get(NAMESPACE_ANNOTATION) {
-        ns.split(",")
+        ns.split(',')
             .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
             .collect::<NSSet>()
     } else {
         let name = secret.name_any();
@@ -67,22 +116,31 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         error!(error = ?error, "missing namespace annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}', not syncing");
         return Err(error);
     };
-    let difference = wanted
-        .difference(&namespaces)
-        .cloned()
-        .collect::<Vec<String>>();
-    if !difference.is_empty() {
-        let unk = difference.join(",");
-        let name = secret.name_any();
-        let namespace = secret.namespace().unwrap_or(String::from(""));
+
+    let name = secret.name_any();
+    let namespace = secret.namespace().unwrap_or(String::from(""));
+    let unknown = wanted.difference(&existing).cloned().collect::<Vec<_>>();
+    if !unknown.is_empty() {
         warn!(
-            "List label {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}' includes unknown namespaces '{unk}'"
+            "annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}' includes unknown namespaces '{}'",
+            unknown.join(",")
         );
     }
-    Ok(namespaces
-        .intersection(&wanted)
-        .map(|k| k.to_owned())
-        .collect::<NSSet>())
+    // Requested namespaces that exist but have not opted in are refused — this
+    // is where a cross-tenant injection attempt gets dropped.
+    let refused = wanted
+        .iter()
+        .filter(|n| existing.contains(*n) && !consenting.contains(*n))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !refused.is_empty() {
+        warn!(
+            "secret '{name}' in namespace '{namespace}' requested namespaces '{}' that have not opted in via {ALLOW_SYNC_LABEL}=true; refusing to sync there",
+            refused.join(",")
+        );
+    }
+
+    Ok(wanted.intersection(&consenting).cloned().collect::<NSSet>())
 }
 
 /// The main reconcile function. The algorithm here is simple:
@@ -106,16 +164,22 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
     let intersection = secret_namespaces(secret.clone(), client.clone()).await?;
 
     // If our list of namespaces has changed remove the old orphaned secrets.
+    // Scope to copies we actually marked (whisper=true) for this source.
     let lp = ListParams {
-        label_selector: Some(format!("{NAMESPACE_LABEL}={namespace},{NAME_LABEL}={name}")),
+        label_selector: Some(format!(
+            "{WHISPER_LABEL}=true,{NAMESPACE_LABEL}={namespace},{NAME_LABEL}={name}"
+        )),
         ..Default::default()
     };
     let api = Api::<Secret>::all(client.clone());
     let orphans = api.list(&lp).await.map_err(Error::ListSecrets)?;
-    // An orphan is a Secret that matches our source name, but isn't in our namespace list.
-    // We delete it here.
+    // An orphan is a managed copy of our source that is no longer in the target
+    // list. We verify managed-copy origin (not just labels) before deleting so a
+    // forged look-alike can't redirect the delete at a victim's secret.
     let orphans = orphans.iter().filter(|it| {
-        it.name_any() == name && !intersection.contains(&it.namespace().unwrap_or(String::from("")))
+        it.name_any() == name
+            && is_managed_copy(it)
+            && !intersection.contains(&it.namespace().unwrap_or(String::from("")))
     });
     for orphan in orphans {
         let ns = orphan.namespace().unwrap_or(String::from(""));
@@ -146,7 +210,7 @@ async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> 
         let secret = (*secret).clone().dup(ns.clone());
         let patch = Patch::Apply(&secret);
         let res = api
-            .patch(&name, &PatchParams::apply("whisperer.jeffl.es"), &patch)
+            .patch(&name, &PatchParams::apply(FIELD_MANAGER), &patch)
             .await
             .map_err(Error::Patch)?;
         ctx.record(
@@ -174,6 +238,24 @@ async fn delete(name: String, namespace: String, ctx: Arc<Context>) -> Result<()
         .map_left(|_| info!("deleting secret {name} in {namespace}"))
         .map_right(|_| info!("deleted secret {name} in {namespace}"));
     Ok(())
+}
+
+/// Delete a secret only if it is genuinely a whisperer-managed copy.
+///
+/// Used for every cross-namespace delete: we fetch the target and confirm it
+/// passes [`is_managed_copy`] before removing it, so a tenant who plants a
+/// look-alike secret (right name/labels, wrong origin) can't trick the operator
+/// into destroying their data. A missing secret is a no-op.
+async fn delete_copy(name: String, namespace: String, ctx: Arc<Context>) -> Result<()> {
+    let api: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
+    match api.get_opt(&name).await.map_err(Error::GetSecret)? {
+        Some(secret) if is_managed_copy(&secret) => delete(name, namespace, ctx).await,
+        Some(_) => {
+            warn!("refusing to delete secret {name} in {namespace}: not a whisperer-managed copy");
+            Ok(())
+        }
+        None => Ok(()),
+    }
 }
 
 /// Does three things:
@@ -206,7 +288,7 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     )
     .await?;
     for ns in union.clone() {
-        delete(name.clone(), ns, ctx.clone()).await?;
+        delete_copy(name.clone(), ns, ctx.clone()).await?;
     }
 
     // And just to be absolutely sure we delete any remaining secrets that have our child labels on them,
@@ -227,7 +309,8 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
         .map_err(Error::ListSecrets)?;
     for secret in secrets {
         let namespace = secret.namespace().unwrap_or(String::from(""));
-        if !union.contains(&namespace) {
+        // We hold the object here, so verify origin directly before deleting.
+        if !union.contains(&namespace) && is_managed_copy(&secret) {
             delete(secret.name_any(), namespace, ctx.clone()).await?;
         }
     }
@@ -245,12 +328,11 @@ async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     }
     let metrics = ctx.metrics.clone();
     let namespace = secret.namespace().unwrap_or(String::from(""));
-    let name = secret.name_any();
-    // NEAT! It's very cool that this sticks around across threads and await, rust is excellent
-    let _ = metrics.duration(namespace.clone(), name.clone());
+    // Hold the duration guard for the whole reconcile; it records on drop.
+    let _record = metrics.duration();
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), &namespace);
     finalizer(&api, FINALIZER, secret, |event| async {
-        metrics.reconcile(namespace.clone(), name.clone());
+        metrics.reconcile();
         match event {
             Event::Apply(secret) => apply(secret, ctx).await,
             Event::Cleanup(secret) => cleanup(secret, ctx).await,
@@ -258,7 +340,7 @@ async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     })
     .await
     .map_err(|e| {
-        metrics.failure(namespace.clone(), name);
+        metrics.failure();
         Error::Finalizer(Box::new(e))
     })
 }
@@ -319,11 +401,76 @@ mod test {
         metrics::MetricState,
     };
 
-    use super::{ACTIVE_LABEL, Context, NAMESPACE_ANNOTATION, WHISPER_LABEL, apply, cleanup};
+    use super::{
+        ACTIVE_LABEL, Context, NAMESPACE_ANNOTATION, WHISPER_LABEL, apply, cleanup,
+        is_managed_copy, is_protected_namespace,
+    };
+    use crate::labels::{FIELD_MANAGER, NAME_LABEL, NAMESPACE_LABEL};
     use k8s_openapi::{
         ByteString,
         api::core::v1::{Namespace, Secret},
+        apimachinery::pkg::apis::meta::v1::ManagedFieldsEntry,
     };
+
+    fn copy_with(labels: &[(&str, &str)], manager: Option<&str>) -> Secret {
+        use kube::api::ObjectMeta;
+        use std::collections::BTreeMap;
+        Secret {
+            metadata: ObjectMeta {
+                labels: Some(
+                    labels
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect::<BTreeMap<_, _>>(),
+                ),
+                managed_fields: manager.map(|m| {
+                    vec![ManagedFieldsEntry {
+                        manager: Some(m.to_string()),
+                        ..Default::default()
+                    }]
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn protected_namespaces_are_rejected() {
+        assert!(is_protected_namespace("kube-system"));
+        assert!(is_protected_namespace("kube-public"));
+        assert!(is_protected_namespace("kube-node-lease"));
+        assert!(!is_protected_namespace("team-a"));
+    }
+
+    #[test]
+    fn managed_copy_requires_both_marker_and_field_manager() {
+        // genuine copy: whisper=true AND our field manager
+        assert!(is_managed_copy(&copy_with(
+            &[
+                (WHISPER_LABEL, "true"),
+                (NAME_LABEL, "db"),
+                (NAMESPACE_LABEL, "src")
+            ],
+            Some(FIELD_MANAGER),
+        )));
+        // forged labels but written by someone else -> not ours, must not delete
+        assert!(!is_managed_copy(&copy_with(
+            &[
+                (WHISPER_LABEL, "true"),
+                (NAME_LABEL, "db"),
+                (NAMESPACE_LABEL, "src")
+            ],
+            Some("attacker"),
+        )));
+        // our manager but no whisper marker -> not a managed copy
+        assert!(!is_managed_copy(&copy_with(
+            &[(NAME_LABEL, "db")],
+            Some(FIELD_MANAGER),
+        )));
+        // nothing -> not a managed copy
+        assert!(!is_managed_copy(&copy_with(&[], None)));
+    }
     use kube::{
         Api, Client,
         api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
