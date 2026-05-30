@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::Secret;
-use kube::{api::ObjectMeta, Resource, ResourceExt};
+use kube::{Resource, ResourceExt, api::ObjectMeta};
 
 use crate::labels::*;
 
@@ -15,7 +15,9 @@ impl SecretExt for Secret {
         let meta = self.meta();
         let name = self.name_any();
         let namespace = self.namespace().unwrap_or(String::from(""));
-        // I could an argument to see not syncing labels and annotations.
+        // Copy the source's labels and annotations, minus the ones that mark it
+        // as a sync source; there's an argument for not propagating them at all,
+        // but keeping them makes the copies easier to trace back.
         let mut labels = self
             .labels()
             .clone()
