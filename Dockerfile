@@ -26,10 +26,18 @@ RUN --mount=type=cache,target=/app/target,sharing=locked \
 RUN --mount=type=cache,target=/app/target,sharing=locked \
     cp /app/target/release/whisperer ./whisperer
 
-FROM rust:latest
-RUN useradd nonroot
-COPY --from=builder --chown=nonroot:nonroot /app/whisperer /app/
-USER nonroot
+# Slim runtime instead of the full rust image. Create a fixed-UID non-root user
+# (65532) so it matches the chart's securityContext.runAsUser/runAsGroup and the
+# pod can satisfy runAsNonRoot. ca-certificates is needed for TLS to the API
+# server and the OTLP endpoint. The binary is dynamically linked against glibc,
+# which the cargo-chef builder and bookworm-slim both provide.
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 65532 --user-group --no-create-home --shell /usr/sbin/nologin nonroot
+COPY --from=builder --chown=65532:65532 /app/whisperer /app/whisperer
+USER 65532:65532
 HEALTHCHECK NONE
 EXPOSE 8080
 ENTRYPOINT ["/app/whisperer"]
