@@ -26,7 +26,7 @@ pub(crate) enum State {
 
 impl State {
     fn is_leader(&self) -> bool {
-        matches!(self, State::Leading { .. })
+        matches!(self, State::Leading)
     }
 
     fn leader(&self) -> String {
@@ -197,7 +197,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
             let should_attempt_acquisition = lease
                 .spec
                 .clone()
-                .and_then(|spec| Some((spec.renew_time, spec.lease_duration_seconds)))
+                .map(|spec| (spec.renew_time, spec.lease_duration_seconds))
                 .and_then(|pair| match pair {
                     (Some(microtime), Some(seconds)) => {
                         Some(microtime.0 + Duration::from_secs(seconds as u64))
@@ -205,7 +205,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
                     (Some(microtime), None) => Some(microtime.0),
                     _ => None,
                 })
-                .map_or(true, |time| time < Timestamp::now());
+                .is_none_or(|time| time < Timestamp::now());
 
             if should_attempt_acquisition {
                 // Add jitter to reduce contention
@@ -269,7 +269,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
     let (state_tx, state_rx) = watch::channel(State::Standby);
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let namespace = client.default_namespace();
-    let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+    let api = Api::<Lease>::namespaced(client.clone(), namespace);
     let handle = tokio::spawn(async move {
         let mut state = State::Standby;
         let owner: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -336,7 +336,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
             }
         }
         // we're shutting down, cleanup our lease
-        if let State::Leading { .. } = state {
+        if let State::Leading = state {
             let pp = PatchParams::default();
             let patch = Patch::Apply(Lease {
                 spec: Some(LeaseSpec {
@@ -346,7 +346,7 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
                 ..Default::default()
             });
             let _ = api
-                .patch(&LOCK_NAME, &pp, &patch)
+                .patch(LOCK_NAME, &pp, &patch)
                 .await
                 .map_err(Error::Patch)?;
             state_tx
@@ -376,9 +376,9 @@ mod test {
     use kube::{Api, Client, Config};
     use serde_json::json;
 
-    use crate::election::{get_hostname, LEASE_TIME};
+    use crate::election::{LEASE_TIME, get_hostname};
 
-    use super::{new_owner, renew, State};
+    use super::{State, new_owner, renew};
 
     #[tokio::test]
     async fn test_new_owner() {
@@ -389,7 +389,7 @@ mod test {
         });
         let client = Client::try_from(Config::new(server.url("/").parse().unwrap())).unwrap();
         let namespace = client.default_namespace();
-        let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+        let api = Api::<Lease>::namespaced(client.clone(), namespace);
         let leader = get_hostname();
         let state = new_owner(
             State::Following {
@@ -433,7 +433,7 @@ mod test {
         let server = MockServer::start_async().await;
         let client = Client::try_from(Config::new(server.url("/").parse().unwrap())).unwrap();
         let namespace = client.default_namespace();
-        let api = Api::<Lease>::namespaced(client.clone(), &namespace);
+        let api = Api::<Lease>::namespaced(client.clone(), namespace);
         (server, api)
     }
 

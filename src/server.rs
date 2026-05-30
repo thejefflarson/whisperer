@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-use axum::{routing::get, Router};
+use anyhow::{Result, anyhow};
+use axum::{Router, routing::get};
 use tokio::net::TcpListener;
 
 use crate::utils::shutdown_signal;

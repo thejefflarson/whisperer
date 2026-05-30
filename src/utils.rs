@@ -1,6 +1,6 @@
 use tokio::signal::{
     ctrl_c,
-    unix::{signal, SignalKind},
+    unix::{SignalKind, signal},
 };
 
 pub(crate) async fn shutdown_signal() {

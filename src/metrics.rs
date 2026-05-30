@@ -4,8 +4,8 @@ use std::{
 };
 
 use opentelemetry::{
-    metrics::{Counter, Histogram, Meter},
     KeyValue,
+    metrics::{Counter, Histogram, Meter},
 };
 
 // this file is neat! I'm proud of it.

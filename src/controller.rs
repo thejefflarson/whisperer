@@ -1,5 +1,5 @@
 use crate::{
-    election::{start, LeaderState},
+    election::{LeaderState, start},
     error::{Error, Result},
     ext::SecretExt,
     labels::*,
@@ -8,16 +8,16 @@ use crate::{
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Namespace, ObjectReference, Secret};
 use kube::{
+    Api, Client, Resource, ResourceExt,
     api::{DeleteParams, ListParams, Patch, PatchParams},
     runtime::{
+        Controller,
         controller::{Action, Error as RuntimeError},
         events::{Event as Notice, EventType, Recorder, Reporter},
-        finalizer::{finalizer, Event},
+        finalizer::{Event, finalizer},
         reflector::ObjectRef,
         watcher::Config,
-        Controller,
     },
-    Api, Client, Resource, ResourceExt,
 };
 use std::{collections::HashSet, env, sync::Arc};
 use tokio::time::Duration;
@@ -54,7 +54,9 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         .collect::<NSSet>();
     let annotations = secret.annotations();
     let wanted = if let Some(ns) = annotations.get(NAMESPACE_ANNOTATION) {
-        ns.split(",").map(|s| s.trim().to_string()).collect::<NSSet>()
+        ns.split(",")
+            .map(|s| s.trim().to_string())
+            .collect::<NSSet>()
     } else {
         let name = secret.name_any();
         let namespace = secret.namespace().unwrap_or(String::from(""));
@@ -73,7 +75,9 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         let unk = difference.join(",");
         let name = secret.name_any();
         let namespace = secret.namespace().unwrap_or(String::from(""));
-        warn!("List label {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}' includes unknown namespaces '{unk}'");
+        warn!(
+            "List label {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}' includes unknown namespaces '{unk}'"
+        );
     }
     Ok(namespaces
         .intersection(&wanted)
@@ -233,7 +237,10 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
 #[instrument(skip(ctx))]
 async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     if !ctx.state.is_leader() {
-        info!("not leader (leader is {}), ignoring change", ctx.state.leader());
+        info!(
+            "not leader (leader is {}), ignoring change",
+            ctx.state.leader()
+        );
         return Ok(Action::await_change());
     }
     let metrics = ctx.metrics.clone();
@@ -312,15 +319,15 @@ mod test {
         metrics::MetricState,
     };
 
-    use super::{apply, cleanup, Context, ACTIVE_LABEL, NAMESPACE_ANNOTATION, WHISPER_LABEL};
+    use super::{ACTIVE_LABEL, Context, NAMESPACE_ANNOTATION, WHISPER_LABEL, apply, cleanup};
     use k8s_openapi::{
-        api::core::v1::{Namespace, Secret},
         ByteString,
+        api::core::v1::{Namespace, Secret},
     };
     use kube::{
+        Api, Client,
         api::{DeleteParams, ListParams, ObjectMeta, Patch, PatchParams, PostParams},
         runtime::events::{Recorder, Reporter},
-        Api, Client,
     };
     use opentelemetry::metrics::MeterProvider;
     use opentelemetry_otlp::{MetricExporter, Protocol, WithExportConfig};
