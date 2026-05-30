@@ -10,6 +10,8 @@ pub enum Error {
     ListNamespaces(#[source] kube::Error),
     #[error("Could not retrieve secrets: {0}")]
     ListSecrets(#[source] kube::Error),
+    #[error("Could not retrieve secret: {0}")]
+    GetSecret(#[source] kube::Error),
     #[error("Could not find label {ACTIVE_LABEL} for secret {name} in namespace {namespace}")]
     MissingLabel { name: String, namespace: String },
     #[error("Could not find destination annotation for secret {name} in namespace {namespace}")]
@@ -36,9 +38,3 @@ pub enum Error {
     ChannelSend,
 }
 pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-impl Error {
-    pub fn metric_label(&self) -> String {
-        format!("{self:?}").to_lowercase()
-    }
-}

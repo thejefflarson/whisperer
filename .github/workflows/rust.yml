@@ -16,6 +16,12 @@ jobs:
     permissions:
       contents: read
     runs-on: whisperer-runners
+    # The runners are self-hosted and persistent, so never execute code from a
+    # forked pull request on them — that would be arbitrary code execution on
+    # the build infrastructure. Push events and same-repo PRs are fine.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
     - name: Enable rust
       run: |
@@ -68,22 +74,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache,mode=max
+      # First-party installer verifies the cosign binary's own checksum, unlike
+      # a bare curl|chmod of a release asset.
       - name: Install cosign
         if: ${{ github.event_name != 'pull_request' }}
-        run: |
-          arch=$(uname -m)
-          case "$arch" in
-            x86_64) dl_arch=amd64 ;;
-            aarch64|arm64) dl_arch=arm64 ;;
-            *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
-          esac
-          curl -sSfL -o "$HOME/cosign" \
-            "https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-${dl_arch}"
-          chmod +x "$HOME/cosign"
-          echo "$HOME" >> "$GITHUB_PATH"
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
       - name: Sign the published Docker image
         if: ${{ github.event_name != 'pull_request' }}
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "missing/invalid build digest: '$DIGEST'" >&2; exit 1; }
+          echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}

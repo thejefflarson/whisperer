@@ -3,10 +3,7 @@ use std::{
     time::SystemTime,
 };
 
-use opentelemetry::{
-    KeyValue,
-    metrics::{Counter, Histogram, Meter},
-};
+use opentelemetry::metrics::{Counter, Histogram, Meter};
 
 // this file is neat! I'm proud of it.
 
@@ -42,6 +39,11 @@ pub struct MetricState {
     inner: Arc<RwLock<Metrics>>,
 }
 
+// These metrics deliberately carry NO per-secret attributes. The secret name
+// and namespace are attacker-controlled, so using them as metric labels would
+// let anyone who can create secrets mint unbounded time series and exhaust the
+// operator's and the collector's memory. Per-object detail belongs in logs and
+// traces, where cardinality is not a resource-exhaustion vector.
 impl MetricState {
     pub fn new(meter: Meter) -> Self {
         Self {
@@ -49,54 +51,37 @@ impl MetricState {
         }
     }
 
-    pub fn reconcile(&self, key: String, value: String) {
-        self.inner
-            .write()
-            .unwrap()
-            .reconciliations
-            .add(1, &[KeyValue::new(key, value)])
+    pub fn reconcile(&self) {
+        self.inner.write().unwrap().reconciliations.add(1, &[])
     }
 
-    pub fn failure(&self, key: String, value: String) {
-        self.inner
-            .write()
-            .unwrap()
-            .failures
-            .add(1, &[KeyValue::new(key, value)])
+    pub fn failure(&self) {
+        self.inner.write().unwrap().failures.add(1, &[])
     }
 
-    pub fn duration(&self, key: String, value: String) -> Record {
+    pub fn duration(&self) -> Record {
         Record {
             start: SystemTime::now(),
             metrics: self.clone(),
-            key,
-            value,
         }
     }
 
-    fn finish(&self, millis: f64, key: String, value: String) {
-        self.inner
-            .write()
-            .unwrap()
-            .duration
-            .record(millis, &[KeyValue::new(key, value)]);
+    fn finish(&self, millis: f64) {
+        self.inner.write().unwrap().duration.record(millis, &[]);
     }
 }
 
 pub struct Record {
     start: SystemTime,
     metrics: MetricState,
-    key: String,
-    value: String,
 }
 
 impl Drop for Record {
     fn drop(&mut self) {
-        let diff = self.start.elapsed().unwrap();
-        self.metrics.finish(
-            diff.as_millis() as f64,
-            self.key.clone(),
-            self.value.clone(),
-        )
+        // `elapsed()` errors only if the clock went backwards; treat that as a
+        // zero-length sample rather than panicking inside a Drop (a panic here,
+        // during unwinding, would abort the whole process).
+        let diff = self.start.elapsed().unwrap_or_default();
+        self.metrics.finish(diff.as_millis() as f64)
     }
 }
