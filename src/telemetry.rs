@@ -10,9 +10,21 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, prelude::*};
 
 use crate::metrics::MetricState;
 
-/// Service name attached to every span and metric. Without a `service.name`
-/// resource attribute, collectors label our telemetry `unknown_service`.
-const SERVICE_NAME: &str = "whisperer";
+/// Default service name attached to every span and metric when the operator
+/// hasn't supplied one. Without a `service.name` resource attribute, collectors
+/// label our telemetry `unknown_service`. An operator can override this with the
+/// standard `OTEL_SERVICE_NAME` (or `OTEL_RESOURCE_ATTRIBUTES=service.name=...`)
+/// environment variable.
+const DEFAULT_SERVICE_NAME: &str = "whisperer";
+
+/// True if the operator has already specified a service name via the standard
+/// OpenTelemetry environment variables, in which case we must not override it.
+fn service_name_set_in_env() -> bool {
+    std::env::var_os("OTEL_SERVICE_NAME").is_some()
+        || std::env::var("OTEL_RESOURCE_ATTRIBUTES")
+            .map(|v| v.contains("service.name"))
+            .unwrap_or(false)
+}
 
 // Telemetry setup follows the patterns from:
 // - https://github.com/kube-rs/controller-rs/blob/main/src/telemetry.rs
@@ -47,8 +59,16 @@ impl Telemetry {
 /// Returns a [`Telemetry`] guard that must be kept alive and shut down on exit.
 pub fn init() -> Result<Telemetry> {
     // Identify this process to the collector so spans and metrics are attributed
-    // to "whisperer" rather than the default "unknown_service".
-    let resource = Resource::builder().with_service_name(SERVICE_NAME).build();
+    // to a real service rather than the default "unknown_service". Honor an
+    // operator-supplied OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES (already
+    // read by Resource::builder()'s env detector); only fall back to our default
+    // when neither is set.
+    let builder = Resource::builder();
+    let resource = if service_name_set_in_env() {
+        builder.build()
+    } else {
+        builder.with_service_name(DEFAULT_SERVICE_NAME).build()
+    };
 
     let span_exporter = SpanExporter::builder().with_http().build()?;
     let tracer_provider = SdkTracerProvider::builder()
@@ -56,7 +76,8 @@ pub fn init() -> Result<Telemetry> {
         .with_resource(resource.clone())
         .with_batch_exporter(span_exporter)
         .build();
-    let otel = tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(SERVICE_NAME));
+    let otel =
+        tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(DEFAULT_SERVICE_NAME));
     let filter = EnvFilter::from_default_env();
     tracing_subscriber::registry()
         .with(otel)
@@ -87,7 +108,7 @@ pub fn init() -> Result<Telemetry> {
         .with_resource(resource)
         .with_periodic_exporter(metric_exporter)
         .build();
-    let metrics = MetricState::new(meter_provider.meter(SERVICE_NAME));
+    let metrics = MetricState::new(meter_provider.meter(DEFAULT_SERVICE_NAME));
 
     Ok(Telemetry {
         tracer_provider,
