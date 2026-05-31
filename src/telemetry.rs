@@ -2,12 +2,17 @@ use anyhow::Result;
 use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _};
 use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
+    Resource,
     metrics::SdkMeterProvider,
     trace::{RandomIdGenerator, SdkTracerProvider},
 };
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, prelude::*};
 
 use crate::metrics::MetricState;
+
+/// Service name attached to every span and metric. Without a `service.name`
+/// resource attribute, collectors label our telemetry `unknown_service`.
+const SERVICE_NAME: &str = "whisperer";
 
 // Telemetry setup follows the patterns from:
 // - https://github.com/kube-rs/controller-rs/blob/main/src/telemetry.rs
@@ -41,12 +46,17 @@ impl Telemetry {
 /// `RUST_LOG`-filtered fmt layer, and wires up a periodic metric exporter.
 /// Returns a [`Telemetry`] guard that must be kept alive and shut down on exit.
 pub fn init() -> Result<Telemetry> {
+    // Identify this process to the collector so spans and metrics are attributed
+    // to "whisperer" rather than the default "unknown_service".
+    let resource = Resource::builder().with_service_name(SERVICE_NAME).build();
+
     let span_exporter = SpanExporter::builder().with_http().build()?;
     let tracer_provider = SdkTracerProvider::builder()
         .with_id_generator(RandomIdGenerator::default())
+        .with_resource(resource.clone())
         .with_batch_exporter(span_exporter)
         .build();
-    let otel = tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("whisperer"));
+    let otel = tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(SERVICE_NAME));
     let filter = EnvFilter::from_default_env();
     tracing_subscriber::registry()
         .with(otel)
@@ -58,9 +68,10 @@ pub fn init() -> Result<Telemetry> {
         .with_protocol(Protocol::HttpBinary)
         .build()?;
     let meter_provider = SdkMeterProvider::builder()
+        .with_resource(resource)
         .with_periodic_exporter(metric_exporter)
         .build();
-    let metrics = MetricState::new(meter_provider.meter("whisperer"));
+    let metrics = MetricState::new(meter_provider.meter(SERVICE_NAME));
 
     Ok(Telemetry {
         tracer_provider,
