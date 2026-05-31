@@ -72,6 +72,59 @@ fn is_managed_copy(secret: &Secret) -> bool {
     marked && ours
 }
 
+/// True if a target namespace has consented to receiving synced secrets, i.e.
+/// it is not protected and carries `whisperer.jeffl.es/allow-sync=true`. This
+/// consent check is the authorization boundary that stops a secret author from
+/// copying data into namespaces they don't control.
+fn is_consenting_namespace(ns: &Namespace) -> bool {
+    !is_protected_namespace(&ns.name_any())
+        && ns
+            .labels()
+            .get(ALLOW_SYNC_LABEL)
+            .map(|v| v == "true")
+            .unwrap_or(false)
+}
+
+/// Outcome of matching a secret's requested namespaces against what the cluster
+/// actually offers. `targets` are the namespaces we will sync into; `unknown`
+/// (don't exist) and `refused` (exist but haven't opted in) are kept only so
+/// the caller can log them.
+struct TargetResolution {
+    targets: NSSet,
+    unknown: Vec<String>,
+    refused: Vec<String>,
+}
+
+/// Pure core of [`secret_namespaces`]: given the `wanted` namespaces from the
+/// annotation and the cluster's current namespaces, decide which are valid
+/// targets. Split out from the API call so it can be unit-tested without a
+/// cluster. A namespace is a target only if it is `wanted`, exists, and
+/// consents (see [`is_consenting_namespace`]).
+fn resolve_targets(wanted: &NSSet, namespaces: &[Namespace]) -> TargetResolution {
+    let existing = namespaces.iter().map(|ns| ns.name_any()).collect::<NSSet>();
+    let consenting = namespaces
+        .iter()
+        .filter(|ns| is_consenting_namespace(ns))
+        .map(|ns| ns.name_any())
+        .collect::<NSSet>();
+
+    let unknown = wanted.difference(&existing).cloned().collect::<Vec<_>>();
+    // Requested namespaces that exist but have not opted in are refused — this
+    // is where a cross-tenant injection attempt gets dropped.
+    let refused = wanted
+        .iter()
+        .filter(|n| existing.contains(*n) && !consenting.contains(*n))
+        .cloned()
+        .collect::<Vec<_>>();
+    let targets = wanted.intersection(&consenting).cloned().collect::<NSSet>();
+
+    TargetResolution {
+        targets,
+        unknown,
+        refused,
+    }
+}
+
 /// Resolve the set of namespaces a secret should be synced into.
 ///
 /// The target list comes from the user-authored `whisperer.jeffl.es/namespaces`
@@ -85,20 +138,6 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         .list(&ListParams::default())
         .await
         .map_err(Error::ListNamespaces)?;
-    let existing = all.iter().map(|ns| ns.name_any()).collect::<NSSet>();
-    let consenting = all
-        .iter()
-        .filter(|ns| {
-            let name = ns.name_any();
-            !is_protected_namespace(&name)
-                && ns
-                    .labels()
-                    .get(ALLOW_SYNC_LABEL)
-                    .map(|v| v == "true")
-                    .unwrap_or(false)
-        })
-        .map(|ns| ns.name_any())
-        .collect::<NSSet>();
 
     let annotations = secret.annotations();
     let wanted = if let Some(ns) = annotations.get(NAMESPACE_ANNOTATION) {
@@ -117,30 +156,24 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
         return Err(error);
     };
 
+    let resolution = resolve_targets(&wanted, &all.items);
+
     let name = secret.name_any();
     let namespace = secret.namespace().unwrap_or(String::from(""));
-    let unknown = wanted.difference(&existing).cloned().collect::<Vec<_>>();
-    if !unknown.is_empty() {
+    if !resolution.unknown.is_empty() {
         warn!(
             "annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}' includes unknown namespaces '{}'",
-            unknown.join(",")
+            resolution.unknown.join(",")
         );
     }
-    // Requested namespaces that exist but have not opted in are refused — this
-    // is where a cross-tenant injection attempt gets dropped.
-    let refused = wanted
-        .iter()
-        .filter(|n| existing.contains(*n) && !consenting.contains(*n))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !refused.is_empty() {
+    if !resolution.refused.is_empty() {
         warn!(
             "secret '{name}' in namespace '{namespace}' requested namespaces '{}' that have not opted in via {ALLOW_SYNC_LABEL}=true; refusing to sync there",
-            refused.join(",")
+            resolution.refused.join(",")
         );
     }
 
-    Ok(wanted.intersection(&consenting).cloned().collect::<NSSet>())
+    Ok(resolution.targets)
 }
 
 /// The main reconcile function. The algorithm here is simple:
@@ -402,15 +435,39 @@ mod test {
     };
 
     use super::{
-        ACTIVE_LABEL, Context, NAMESPACE_ANNOTATION, WHISPER_LABEL, apply, cleanup,
-        is_managed_copy, is_protected_namespace,
+        ACTIVE_LABEL, Context, NAMESPACE_ANNOTATION, NSSet, WHISPER_LABEL, apply, cleanup,
+        is_consenting_namespace, is_managed_copy, is_protected_namespace, resolve_targets,
     };
-    use crate::labels::{FIELD_MANAGER, NAME_LABEL, NAMESPACE_LABEL};
+    use crate::labels::{ALLOW_SYNC_LABEL, FIELD_MANAGER, NAME_LABEL, NAMESPACE_LABEL};
     use k8s_openapi::{
         ByteString,
         api::core::v1::{Namespace, Secret},
         apimachinery::pkg::apis::meta::v1::ManagedFieldsEntry,
     };
+
+    /// Build a Namespace with the given name and labels for the pure
+    /// target-resolution tests.
+    fn ns_with(name: &str, labels: &[(&str, &str)]) -> Namespace {
+        use kube::api::ObjectMeta;
+        use std::collections::BTreeMap;
+        Namespace {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                labels: Some(
+                    labels
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect::<BTreeMap<_, _>>(),
+                ),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn wanted(names: &[&str]) -> NSSet {
+        names.iter().map(|s| s.to_string()).collect()
+    }
 
     fn copy_with(labels: &[(&str, &str)], manager: Option<&str>) -> Secret {
         use kube::api::ObjectMeta;
@@ -470,6 +527,58 @@ mod test {
         )));
         // nothing -> not a managed copy
         assert!(!is_managed_copy(&copy_with(&[], None)));
+    }
+
+    #[test]
+    fn consenting_namespace_requires_allow_sync_label() {
+        assert!(is_consenting_namespace(&ns_with(
+            "team-a",
+            &[(ALLOW_SYNC_LABEL, "true")]
+        )));
+        // present but not "true"
+        assert!(!is_consenting_namespace(&ns_with(
+            "team-a",
+            &[(ALLOW_SYNC_LABEL, "false")]
+        )));
+        // label absent
+        assert!(!is_consenting_namespace(&ns_with("team-a", &[])));
+        // protected namespaces never consent, even if labelled
+        assert!(!is_consenting_namespace(&ns_with(
+            "kube-system",
+            &[(ALLOW_SYNC_LABEL, "true")]
+        )));
+    }
+
+    #[test]
+    fn resolve_targets_only_syncs_into_opted_in_namespaces() {
+        let namespaces = [
+            ns_with("opted-in", &[(ALLOW_SYNC_LABEL, "true")]),
+            ns_with("not-opted-in", &[]),
+            ns_with("kube-system", &[(ALLOW_SYNC_LABEL, "true")]),
+        ];
+        // Request all three plus one that doesn't exist.
+        let res = resolve_targets(
+            &wanted(&["opted-in", "not-opted-in", "kube-system", "ghost"]),
+            &namespaces,
+        );
+
+        // Only the consenting, non-protected namespace is a target.
+        assert_eq!(res.targets, wanted(&["opted-in"]));
+        // An existing namespace without the opt-in label is refused (this is
+        // the cross-tenant injection that gets dropped) — protected too.
+        assert!(res.refused.contains(&"not-opted-in".to_string()));
+        assert!(res.refused.contains(&"kube-system".to_string()));
+        // A namespace that doesn't exist is unknown, not refused, not a target.
+        assert_eq!(res.unknown, vec!["ghost".to_string()]);
+        assert!(!res.targets.contains("ghost"));
+    }
+
+    #[test]
+    fn resolve_targets_is_empty_when_nothing_opts_in() {
+        let namespaces = [ns_with("a", &[]), ns_with("b", &[])];
+        let res = resolve_targets(&wanted(&["a", "b"]), &namespaces);
+        assert!(res.targets.is_empty());
+        assert_eq!(res.refused.len(), 2);
     }
     use kube::{
         Api, Client,
