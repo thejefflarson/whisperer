@@ -88,11 +88,22 @@ Key Helm values: `image.repository`, `image.tag`, `otelEndpoint`.
 
 - Secret data is never logged.
 - Syncing requires explicit opt-in (`whisperer.jeffl.es/sync=true`).
+- Target namespaces must consent with `whisperer.jeffl.es/allow-sync=true`; protected namespaces (`kube-system`, `kube-public`, `kube-node-lease`, the operator's own `CONTROLLER_NAMESPACE`) are never targets. See [ADR 0001](docs/adr/0001-cross-namespace-sync-authorization.md).
+- Cross-namespace deletes are gated on verified operator origin (the `whisper` marker AND our server-side-apply field manager), not on spoofable provenance labels.
 - Synced copies strip the source finalizer and namespace annotation to prevent unintended re-sync.
 - The health check server binds to `0.0.0.0` — required for Kubernetes liveness/readiness probes.
+- The runtime image runs as non-root UID 65532; the chart sets a hardened `securityContext`.
 - Images and Helm charts are signed with cosign.
+
+## Design Decisions
+
+Durable design decisions are recorded as ADRs in [`docs/adr/`](docs/adr/):
+
+- [ADR 0001 — Cross-namespace sync authorization](docs/adr/0001-cross-namespace-sync-authorization.md)
+- [ADR 0002 — Security review remediation (v0.2.0)](docs/adr/0002-security-review-remediation.md)
+
+Prefer recording a new decision as an ADR (or a note in this file) over leaving it implicit, so it is version-controlled and reviewable.
 
 ## Known Issues / TODOs
 
-- `telemetry.rs` is a stub; tracing setup lives in `main.rs` directly.
-- The runtime Docker image uses `rust:latest` (large). Consider `debian:bookworm-slim` or distroless.
+- _None currently. (`telemetry.rs` now owns the OTLP pipelines and sets `service.name`; the runtime image is `debian:bookworm-slim` running as non-root UID 65532.)_
