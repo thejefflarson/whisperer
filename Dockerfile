@@ -1,4 +1,8 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+# Builder must match the runtime's glibc. debian:bookworm-slim ships glibc 2.36;
+# the default cargo-chef:latest-rust-1 is a newer Debian (glibc 2.41), which
+# produces a binary that fails on bookworm with "GLIBC_2.39 not found". The
+# -bookworm tag is built on bookworm (glibc 2.36) so the two stay in sync.
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
 WORKDIR /app
 
 FROM chef AS planner
