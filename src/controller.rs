@@ -599,13 +599,20 @@ mod test {
         let lp = ListParams::default().labels(&format!("{ACTIVE_LABEL}=true"));
         let nsapi: Api<Namespace> = Api::all(client.clone());
         let namespaces = ["source", "target", "target2", "clean"];
+        // Targets must consent with allow-sync=true before whisperer will sync
+        // into them; "source" and "clean" deliberately don't opt in.
+        let consenting = ["target", "target2"];
         for ns in namespaces {
+            let labels = consenting
+                .contains(&ns)
+                .then(|| BTreeMap::from([(ALLOW_SYNC_LABEL.to_string(), "true".to_string())]));
             nsapi
                 .create(
                     &PostParams::default(),
                     &Namespace {
                         metadata: ObjectMeta {
                             name: Some(ns.to_string()),
+                            labels,
                             ..ObjectMeta::default()
                         },
                         ..Namespace::default()
