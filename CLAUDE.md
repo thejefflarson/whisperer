@@ -106,4 +106,4 @@ Prefer recording a new decision as an ADR (or a note in this file) over leaving 
 
 ## Known Issues / TODOs
 
-- `telemetry.rs` is a stub; tracing setup lives in `main.rs` directly._(resolved: `telemetry.rs` now owns the OTLP pipelines and sets `service.name`.)_
+- _None currently. (`telemetry.rs` now owns the OTLP pipelines and sets `service.name`; the runtime image is `debian:bookworm-slim` running as non-root UID 65532.)_
