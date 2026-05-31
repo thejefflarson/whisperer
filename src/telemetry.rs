@@ -63,6 +63,22 @@ pub fn init() -> Result<Telemetry> {
         .with(fmt::layer().with_filter(filter))
         .init();
 
+    // Warn when OTLP goes over plaintext HTTP to a non-loopback address — metric
+    // attributes include Kubernetes secret names and namespace values.
+    let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4318".to_string());
+    if !otlp_endpoint.starts_with("https://")
+        && !otlp_endpoint.contains("localhost")
+        && !otlp_endpoint.contains("127.0.0.1")
+    {
+        tracing::warn!(
+            endpoint = %otlp_endpoint,
+            "OTLP endpoint uses plaintext HTTP; metric attributes contain \
+             Kubernetes secret names and namespaces — set \
+             OTEL_EXPORTER_OTLP_ENDPOINT to an https:// URL in production"
+        );
+    }
+
     let metric_exporter = MetricExporter::builder()
         .with_http()
         .with_protocol(Protocol::HttpBinary)
