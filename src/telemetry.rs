@@ -1,5 +1,5 @@
 use anyhow::Result;
-use opentelemetry::{metrics::MeterProvider, trace::TracerProvider as _};
+use opentelemetry::{global, metrics::MeterProvider, trace::TracerProvider as _};
 use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{
     Resource,
@@ -76,6 +76,10 @@ pub fn init() -> Result<Telemetry> {
         .with_resource(resource.clone())
         .with_batch_exporter(span_exporter)
         .build();
+    // Register globally so spans created via the OpenTelemetry global API (not
+    // just our tracing layer) also carry service.name; without this they fall
+    // back to a no-op provider and lose the resource.
+    global::set_tracer_provider(tracer_provider.clone());
     let otel =
         tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(DEFAULT_SERVICE_NAME));
     let filter = EnvFilter::from_default_env();
@@ -108,6 +112,9 @@ pub fn init() -> Result<Telemetry> {
         .with_resource(resource)
         .with_periodic_exporter(metric_exporter)
         .build();
+    // Same as the tracer: make this the global meter provider so any metrics
+    // recorded through the global API are attributed to service.name too.
+    global::set_meter_provider(meter_provider.clone());
     let metrics = MetricState::new(meter_provider.meter(DEFAULT_SERVICE_NAME));
 
     Ok(Telemetry {
