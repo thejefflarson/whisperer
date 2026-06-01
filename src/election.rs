@@ -440,11 +440,6 @@ mod test {
     #[tokio::test]
     async fn test_leading_following() {
         let (server, api) = create_server().await;
-        let recording = server.record(|rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
 
         // test leading -> following
         let mock = server.mock(|when: When, then: Then| {
@@ -468,21 +463,12 @@ mod test {
             }
         );
         mock.assert();
-        let _ = recording
-            .save_to_async("recordings", "leading_to_following")
-            .await
-            .unwrap();
     }
 
     #[tokio::test]
     /// test standby -> following
     async fn test_standby_to_following() {
         let (server, api) = create_server().await;
-        let recording = server.record(|rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
         let mock = server.mock(|when: When, then: Then| {
             when.method(GET).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
@@ -504,21 +490,12 @@ mod test {
             }
         );
         mock.assert();
-        let _ = recording
-            .save_to_async("recordings", "standby_to_following")
-            .await
-            .unwrap();
     }
 
     #[tokio::test]
     /// test promotion to leading with a malformed lease
     async fn test_following_to_leading_malformed() {
         let (server, api) = create_server().await;
-        let recording = server.record(|rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
         // case 1. no expires
         let mock = server.mock(|when: When, then: Then| {
             when.method(GET).path(
@@ -565,20 +542,11 @@ mod test {
         assert_eq!(state, State::Leading);
         mock.assert();
         put.assert();
-        let _ = recording
-            .save_to_async("recordings", "following_to_leading_malformed")
-            .await
-            .unwrap();
     }
 
     #[tokio::test]
     async fn test_following_to_leading() {
         let (server, api) = create_server().await;
-        let recording = server.record(|rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
         // case 2. expired
         let mock = server.mock(|when: When, then: Then| {
             when.method(GET).path(
@@ -632,10 +600,6 @@ mod test {
         )
         .await;
 
-        let _ = recording
-            .save_to_async("recordings", "following_to_leading")
-            .await
-            .unwrap();
         mock.assert();
         patch.assert();
         assert_eq!(state.unwrap(), State::Leading);
@@ -645,11 +609,6 @@ mod test {
     /// test standby -> leading
     async fn test_standby_to_leading() {
         let (server, api) = create_server().await;
-        let recording = server.record(|rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
         let mock = server.mock(|when: When, then: Then| {
             when.method(GET).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
@@ -681,21 +640,12 @@ mod test {
         assert_eq!(state, State::Leading);
         patch.assert();
         mock.assert();
-        let _ = recording
-            .save_to_async("recordings", "standby_to_leading")
-            .await
-            .unwrap();
     }
 
     #[tokio::test]
     /// test leading -> leading
     async fn test_leading_leading() {
         let (server, api) = create_server().await;
-        let recording = server.record(|rule| {
-            rule.filter(|when| {
-                when.any_request(); // Record all requests
-            });
-        });
         let mock = server.mock(|when: When, then: Then| {
             when.method(GET).path(
                 "/apis/coordination.k8s.io/v1/namespaces/default/leases/whisperer-controller-lock",
@@ -727,9 +677,5 @@ mod test {
         assert_eq!(state, State::Leading);
         patch.assert();
         mock.assert();
-        let _ = recording
-            .save_to_async("recordings", "leading_to_leading")
-            .await
-            .unwrap();
     }
 }

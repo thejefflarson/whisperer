@@ -12,6 +12,11 @@ description: A Helm chart for Kubernetes
 # pipeline. Library charts do not define any templates and therefore cannot be deployed.
 type: application
 
+# Minimum Kubernetes version required.
+# 1.21 is when seccompProfile.type: RuntimeDefault became GA; older clusters
+# silently ignore that hardening without this constraint.
+kubeVersion: ">=1.21.0-0"
+
 # This is the chart version. This version number should be incremented each time you make changes
 # to the chart and its templates, including the app version.
 # Versions are expected to follow Semantic Versioning (https://semver.org/)

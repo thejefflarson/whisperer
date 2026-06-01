@@ -14,6 +14,9 @@ image:
   # to pull the exact, cosign-signed version this chart was published for; a
   # floating tag like "latest" would defeat that signature/digest pinning.
   tag: ""
+  # Pin by digest (e.g. sha256:abc123...) to guarantee a specific immutable
+  # image layer regardless of tag mutability. When set, overrides tag.
+  digest: ""
 
 # This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
 imagePullSecrets: []
@@ -31,8 +34,10 @@ rbac:
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
-  # Automatically mount a ServiceAccount's API credentials?
-  automount: true
+  # Do not auto-mount the SA token cluster-wide; the deployment template
+  # projects an expiring token explicitly so the mount is intentional and
+  # auditable. Set to true only if you manage the volume mount yourself.
+  automount: false
   # Annotations to add to the service account
   annotations: {}
   # The name of the service account to use.
@@ -73,17 +78,16 @@ service:
   # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
   port: 80
 
-resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+# Resource limits prevent adversarial reconcile loops or large secret copies
+# from exhausting node resources. Tune for your cluster; these defaults are
+# conservative and safe for most single-instance deployments.
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
 
 # This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 livenessProbe:
@@ -122,4 +126,13 @@ tolerations: []
 
 affinity: {}
 
+# OTLP collector endpoint. The default targets a sidecar on localhost.
+# When overriding to a remote collector, use an https:// endpoint so that
+# reconciled secret names are not transmitted in plaintext.
 otelEndpoint: http://localhost:4318
+
+# NetworkPolicy restricts ingress (health-check probes only) and egress
+# (Kubernetes API server, DNS, OTLP collector) for the operator pod.
+# Enable this when your cluster has a CNI that enforces NetworkPolicy.
+networkPolicy:
+  enabled: false

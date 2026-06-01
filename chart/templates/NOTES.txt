@@ -12,3 +12,11 @@ recreating any that are deleted, and removing all copies if the source is delete
 Check the operator:
   kubectl --namespace {{ .Release.Namespace }} rollout status deploy/{{ include "..fullname" . }}
   kubectl --namespace {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "..name" . }}
+
+Verify the image signature (requires cosign):
+  IMAGE=$(kubectl --namespace {{ .Release.Namespace }} get deploy/{{ include "..fullname" . }} \
+    -o jsonpath='{.spec.template.spec.containers[0].image}')
+  cosign verify \
+    --certificate-identity-regexp="https://github.com/thejefflarson/whisperer/.github/workflows/rust.yml@refs/.*" \
+    --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+    "${IMAGE}"
