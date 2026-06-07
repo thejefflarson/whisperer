@@ -353,11 +353,14 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
 #[instrument(skip(ctx))]
 async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     if !ctx.state.is_leader() {
-        info!(
-            "not leader (leader is {}), ignoring change",
-            ctx.state.leader()
-        );
-        return Ok(Action::await_change());
+        // Requeue (not await_change): a non-leader must re-check later, because the
+        // initial reconcile on startup can run *before* this replica wins the lease.
+        // await_change would then park this object until the source secret itself
+        // changes again — so consent-label / target-namespace changes would never get
+        // re-evaluated (a synced secret could silently never appear). Requeueing makes
+        // the object re-reconcile once leadership settles.
+        info!("not leader (leader is {}), requeueing", ctx.state.leader());
+        return Ok(Action::requeue(Duration::from_secs(30)));
     }
     let metrics = ctx.metrics.clone();
     let namespace = secret.namespace().unwrap_or(String::from(""));
