@@ -350,7 +350,10 @@ async fn cleanup(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     Ok(Action::await_change())
 }
 
-#[instrument(skip(ctx))]
+// skip(secret) too: the Secret body (the synced pull-secret/dockerconfigjson, i.e. a
+// live credential) must never land in a span field / log line. apply() and cleanup()
+// already skip it; this span was the one leaking it at info level.
+#[instrument(skip(ctx, secret))]
 async fn dispatcher(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action> {
     if !ctx.state.is_leader() {
         // Requeue (not await_change): a non-leader must re-check later, because the
