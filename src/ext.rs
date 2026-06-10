@@ -1,55 +1,47 @@
 use std::collections::BTreeMap;
 
 use k8s_openapi::api::core::v1::Secret;
-use kube::{Resource, ResourceExt, api::ObjectMeta};
+use kube::{ResourceExt, api::ObjectMeta};
 
 use crate::labels::*;
 
 pub(crate) trait SecretExt {
-    fn dup(&self, ns: String) -> Self;
+    fn dup(&self, name: &str, owner_uid: &str, source_ns: &str, target_ns: String) -> Self;
 }
 
 impl SecretExt for Secret {
-    // Duplicate a secret into namespace with the correct labels in place.
-    fn dup(&self, ns: String) -> Secret {
-        let meta = self.meta();
-        let name = self.name_any();
-        let namespace = self.namespace().unwrap_or(String::from(""));
-        // Copy the source's labels and annotations, minus the ones that mark it
-        // as a sync source; there's an argument for not propagating them at all,
-        // but keeping them makes the copies easier to trace back.
-        let mut labels = self
-            .labels()
-            .clone()
-            .iter()
-            .filter(|it| it.0 != ACTIVE_LABEL)
-            .map(|it| (it.0.to_owned(), it.1.to_owned()))
-            .collect::<BTreeMap<String, String>>();
-        labels.insert(NAMESPACE_LABEL.to_string(), namespace.clone());
-        labels.insert(NAME_LABEL.to_string(), name.clone());
+    /// Duplicate this (source) secret's contents into `target_ns` as a copy named
+    /// `name` — the owning Whisper's name, NOT the source secret's name. Naming
+    /// the copy after the Whisper keeps its identity stable across
+    /// `spec.secretName` renames, so a rename refreshes the copy in place instead
+    /// of orphaning the old-named one. `owner_uid` and `source_ns` are stamped as
+    /// labels so the operator can attribute the copy back to its Whisper.
+    fn dup(&self, name: &str, owner_uid: &str, source_ns: &str, target_ns: String) -> Secret {
+        // Carry the source's labels/annotations for traceability, but strip any
+        // whisperer-managed keys first so a crafted source can't smuggle in a
+        // stale marker (e.g. a forged owner-uid). Then stamp our own.
+        let strip_managed = |m: &BTreeMap<String, String>| {
+            m.iter()
+                .filter(|(k, _)| !k.starts_with(MANAGED_PREFIX))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<BTreeMap<String, String>>()
+        };
+        let mut labels = strip_managed(self.labels());
         labels.insert(WHISPER_LABEL.to_string(), "true".to_string());
-        let annotations = self
-            .annotations()
-            .clone()
-            .iter()
-            .filter(|it| it.0 != NAMESPACE_ANNOTATION)
-            .map(|it| (it.0.to_owned(), it.1.to_owned()))
-            .collect::<BTreeMap<String, String>>();
-        let finalizers = meta
-            .finalizers
-            .clone()
-            .map(|it| it.into_iter().filter(|it| it != FINALIZER).collect());
+        labels.insert(OWNER_UID_LABEL.to_string(), owner_uid.to_string());
+        labels.insert(NAME_LABEL.to_string(), name.to_string());
+        labels.insert(NAMESPACE_LABEL.to_string(), source_ns.to_string());
+
+        let annotations = strip_managed(self.annotations());
+
         Secret {
             data: self.data.clone(),
             immutable: self.immutable,
             metadata: ObjectMeta {
                 annotations: Some(annotations),
-                deletion_grace_period_seconds: meta.deletion_grace_period_seconds,
-                finalizers,
-                generate_name: meta.generate_name.clone(),
                 labels: Some(labels),
-                name: meta.name.clone(),
-                namespace: Some(ns),
+                name: Some(name.to_string()),
+                namespace: Some(target_ns),
                 ..ObjectMeta::default()
             },
             string_data: self.string_data.clone(),

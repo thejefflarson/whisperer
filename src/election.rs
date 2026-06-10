@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::env;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use futures::prelude::*;
@@ -31,7 +32,7 @@ impl State {
 
     fn leader(&self) -> String {
         match &self {
-            State::Leading => get_hostname(),
+            State::Leading => identity().to_string(),
             State::Following { leader } => leader.clone(),
             State::Standby => String::from("unknown"),
         }
@@ -73,13 +74,34 @@ impl LeaderState {
     }
 }
 
-fn get_hostname() -> String {
-    let hn = gethostname::gethostname().into_string();
-    hn.unwrap_or(String::from("unknown"))
+/// This replica's lease holder identity: stable for the life of the process and
+/// guaranteed unique across replicas. We prefer the pod name (`CONTROLLER_POD_NAME`,
+/// set by the chart via the downward API) for readability, fall back to the
+/// hostname, and ALWAYS append a per-process random nonce — so two replicas can
+/// never collide on identity (which would let both believe they hold the lease and
+/// reconcile at once). Never the constant "unknown".
+fn identity() -> &'static str {
+    static IDENTITY: OnceLock<String> = OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        let base = env::var("CONTROLLER_POD_NAME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| gethostname::gethostname().into_string().ok())
+            .unwrap_or_else(|| "whisperer".to_string());
+        let nonce: u64 = rand::random();
+        format!("{base}_{nonce:016x}")
+    })
 }
 
 const LEASE_TIME: i32 = 15;
 const RENEW_TIME: i32 = LEASE_TIME / 3;
+/// Skew tolerance: a follower only treats a lease as acquirable once it has been
+/// un-renewed for `lease_duration + GRACE`, so a follower whose clock runs a few
+/// seconds fast can't seize a lease a healthy leader still holds. (Borrowed from
+/// the grace-period model in `kube-lease-manager`.) A leader renews every
+/// `RENEW_TIME` (5s) — far inside `LEASE_TIME` (15s) — so a live leader's lease
+/// never ages into this window.
+const GRACE: i32 = 5;
 #[instrument(skip(api, change))]
 async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<State> {
     let generations = change
@@ -96,7 +118,7 @@ async fn acquire(_: State, api: Api<Lease>, change: Option<Lease>) -> Result<Sta
         .clone()
         .map(|lease| lease.metadata)
         .and_then(|meta| meta.resource_version);
-    let hostname = get_hostname();
+    let hostname = identity().to_string();
     let new = Lease {
         metadata: ObjectMeta {
             name: Some(LOCK_NAME.to_string()),
@@ -145,7 +167,7 @@ async fn new_owner(state: State, api: Api<Lease>, change: Option<Lease>) -> Resu
         return acquire(state, api, change).await;
     }
     let lease = change.clone().unwrap();
-    let hostname = get_hostname();
+    let hostname = identity().to_string();
     // check if it's us, return state
     if let Some(leader) = lease
         .spec
@@ -178,7 +200,7 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
         .spec
         .as_ref()
         .and_then(|it| it.holder_identity.clone());
-    let hostname = get_hostname();
+    let hostname = identity().to_string();
     match (state.clone(), current_leader) {
         // If we're leading but someone else has the lease now
         (State::Leading, Some(leader)) if leader != hostname => {
@@ -194,13 +216,16 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
 
         // If we're following and should try to acquire the lease
         (State::Following { .. }, Some(leader)) => {
+            // Only acquire once the lease has been un-renewed for its full
+            // duration PLUS the grace margin — so a follower whose clock runs a
+            // few seconds fast can't seize a lease a healthy leader still holds.
             let should_attempt_acquisition = lease
                 .spec
                 .clone()
                 .map(|spec| (spec.renew_time, spec.lease_duration_seconds))
                 .and_then(|pair| match pair {
                     (Some(microtime), Some(seconds)) => {
-                        Some(microtime.0 + Duration::from_secs(seconds as u64))
+                        Some(microtime.0 + Duration::from_secs((seconds + GRACE) as u64))
                     }
                     (Some(microtime), None) => Some(microtime.0),
                     _ => None,
@@ -226,7 +251,22 @@ async fn renew(state: State, api: Api<Lease>, change: Option<Lease>) -> Result<S
     }
 }
 
-const BACKOFF: u64 = 30;
+// Backoff after a failed lease operation. MUST be shorter than LEASE_TIME: if we
+// can't confirm our lease we step down (below) and must be ready to re-acquire
+// before the lease expires and another replica legitimately takes over.
+const BACKOFF: u64 = 2;
+
+/// On a failed lease operation we cannot prove we still hold the lease, so a
+/// leader must **step down** rather than keep reconciling on a lease another
+/// replica may have taken — otherwise two leaders write/delete concurrently. A
+/// follower/standby just stays put and retries.
+fn fail_safe(current_state: &State) -> State {
+    match current_state {
+        State::Leading => State::Standby,
+        other => other.clone(),
+    }
+}
+
 async fn transition<F, Fut>(
     current_state: State,
     api: Api<Lease>,
@@ -239,23 +279,25 @@ where
     Fut: Future<Output = Result<State, Error>>,
 {
     let new_state = {
-        // Extract the lease or handle error and return current state
+        // Extract the lease or step down and back off on error.
         let lease = match lease_result {
             Ok(lease) => lease,
             Err(err) => {
                 warn!(error = ?err, context = context, "Lease operation failed");
+                let demoted = fail_safe(&current_state);
                 sleep(Duration::from_secs(BACKOFF)).await;
-                return (current_state, false);
+                return (demoted.clone(), current_state != demoted);
             }
         };
 
-        // Perform the operation or handle error and return current state
+        // Perform the operation or step down and back off on error.
         match operation(current_state.clone(), api, lease).await {
             Ok(new_state) => new_state,
             Err(err) => {
                 warn!(error = ?err, context = context, "State transition failed");
+                let demoted = fail_safe(&current_state);
                 sleep(Duration::from_secs(BACKOFF)).await;
-                current_state.clone()
+                demoted
             }
         }
     };
@@ -376,9 +418,29 @@ mod test {
     use kube::{Api, Client, Config};
     use serde_json::json;
 
-    use crate::election::{LEASE_TIME, get_hostname};
+    use crate::election::{LEASE_TIME, identity};
 
-    use super::{State, new_owner, renew};
+    use super::{State, fail_safe, new_owner, renew};
+
+    #[test]
+    fn fail_safe_steps_a_leader_down() {
+        // A leader that can't confirm its lease must stop reconciling.
+        assert_eq!(fail_safe(&State::Leading), State::Standby);
+        // Non-leaders just stay where they are.
+        assert_eq!(fail_safe(&State::Standby), State::Standby);
+        let following = State::Following {
+            leader: "other".to_string(),
+        };
+        assert_eq!(fail_safe(&following), following);
+    }
+
+    #[test]
+    fn identity_is_unique_and_not_unknown() {
+        // Stable within a process, and never the spoofable "unknown" constant.
+        assert_eq!(identity(), identity());
+        assert_ne!(identity(), "unknown");
+        assert!(identity().contains('_'));
+    }
 
     #[tokio::test]
     async fn test_new_owner() {
@@ -390,7 +452,7 @@ mod test {
         let client = Client::try_from(Config::new(server.url("/").parse().unwrap())).unwrap();
         let namespace = client.default_namespace();
         let api = Api::<Lease>::namespaced(client.clone(), namespace);
-        let leader = get_hostname();
+        let leader = identity().to_string();
         let state = new_owner(
             State::Following {
                 leader: leader.clone(),
@@ -543,7 +605,7 @@ mod test {
             );
             let lease = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
+                    holder_identity: Some(identity().to_string()),
                     ..Default::default()
                 }),
                 metadata: ObjectMeta {
@@ -588,8 +650,9 @@ mod test {
                 spec: Some(LeaseSpec {
                     holder_identity: Some("not-us".to_string()),
                     lease_duration_seconds: Some(1),
-                    acquire_time: Some(MicroTime(Timestamp::now() - Duration::from_secs(2))),
-                    renew_time: Some(MicroTime(Timestamp::now() - Duration::from_secs(2))),
+                    // Un-renewed well past lease_duration + GRACE, so it's acquirable.
+                    acquire_time: Some(MicroTime(Timestamp::now() - Duration::from_secs(30))),
+                    renew_time: Some(MicroTime(Timestamp::now() - Duration::from_secs(30))),
                     lease_transitions: Some(0),
                     ..Default::default()
                 }),
@@ -601,7 +664,7 @@ mod test {
         let patch = server.mock(|when, then| {
             let patch = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
+                    holder_identity: Some(identity().to_string()),
                     lease_duration_seconds: Some(LEASE_TIME),
                     lease_transitions: Some(1),
                     ..Default::default()
@@ -615,7 +678,7 @@ mod test {
             ).json_body_includes(json!(patch).to_string());
             let lease = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
+                    holder_identity: Some(identity().to_string()),
                     lease_transitions: Some(1),
                     ..Default::default()
                 }),
@@ -656,7 +719,7 @@ mod test {
             );
             let lease = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname()),
+                    holder_identity: Some(identity().to_string()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -670,7 +733,7 @@ mod test {
             ); // todo test the body is the right shape too
             let lease = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
+                    holder_identity: Some(identity().to_string()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -702,7 +765,7 @@ mod test {
             );
             let lease = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname()),
+                    holder_identity: Some(identity().to_string()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -716,7 +779,7 @@ mod test {
             ); // todo test the body is the right shape too
             let lease = Lease {
                 spec: Some(LeaseSpec {
-                    holder_identity: Some(get_hostname().to_string()),
+                    holder_identity: Some(identity().to_string()),
                     ..Default::default()
                 }),
                 ..Default::default()

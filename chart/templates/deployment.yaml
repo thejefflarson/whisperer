@@ -65,6 +65,31 @@ spec:
               value: {{ .Values.service.port | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.otelEndpoint | quote }}
+            # The operator's own namespace is never a valid sync target
+            # (is_protected_namespace); pass it in so that guard is enforced.
+            - name: CONTROLLER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Reported as the event source instance (see controller.rs Reporter).
+            - name: CONTROLLER_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The namespaces the operator may write into — the same set RBAC
+            # grants secret-writer in. The controller name-probes these to
+            # rediscover orphaned copies if a Whisper's status is ever lost, so
+            # cleanup never needs a cluster-wide secret list (see ADR 0003).
+            {{- with .Values.writeNamespaces }}
+            - name: WRITE_NAMESPACES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            # Namespaces being decommissioned: probed + reclaimed, never written to
+            # (drainNamespaces). See ADR 0003.
+            {{- with .Values.drainNamespaces }}
+            - name: DRAIN_NAMESPACES
+              value: {{ join "," . | quote }}
+            {{- end }}
       {{- with .Values.volumes }}
       volumes:
         {{- toYaml . | nindent 8 }}

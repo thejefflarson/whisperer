@@ -10,3 +10,4 @@ reviewable alongside the change that introduces it.
 
 - [0001 — Cross-namespace sync authorization](0001-cross-namespace-sync-authorization.md)
 - [0002 — Security review remediation (v0.2.0)](0002-security-review-remediation.md)
+- [0003 — Whisper CRD and scoped RBAC](0003-crd-scoped-rbac.md)

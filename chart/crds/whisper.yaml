@@ -1,0 +1,80 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: whispers.whisperer.jeffl.es
+spec:
+  group: whisperer.jeffl.es
+  names:
+    categories: []
+    kind: Whisper
+    plural: whispers
+    shortNames:
+    - whisp
+    singular: whisper
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.secretName
+      name: Secret
+      type: string
+    - jsonPath: .spec.namespaces
+      name: Targets
+      type: string
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for WhisperSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              A request to replicate one Secret from this namespace into others.
+
+              A `Whisper` lives in the **source** namespace and names a Secret in that same
+              namespace. Keeping the source local is the authorization boundary: you can
+              only whisper a secret out of a namespace where you can already create
+              objects, so nobody can replicate a secret they don't own. Targets still have
+              to consent with `whisperer.jeffl.es/allow-sync=true`.
+
+              Replacing the old label-on-Secret + annotation config with a CRD is what lets
+              the operator watch *Whispers* (its own API group) instead of every Secret in
+              the cluster — so it no longer needs cluster-wide secret `list`/`watch`.
+            properties:
+              namespaces:
+                description: |-
+                  Namespaces to replicate the secret into. Each must opt in with
+                  `whisperer.jeffl.es/allow-sync=true`; protected and unknown namespaces
+                  are skipped (and logged). Bounded so a single Whisper can't inflate
+                  per-reconcile work without limit (the API server rejects oversized specs).
+                items:
+                  type: string
+                maxItems: 256
+                type: array
+              secretName:
+                description: Name of the Secret in this (the Whisper's own) namespace to replicate.
+                type: string
+            required:
+            - namespaces
+            - secretName
+            type: object
+          status:
+            description: |-
+              Operator-maintained record of where copies currently live. Orphans are
+              reclaimed by diffing this against the current spec, so cleanup touches only
+              known namespaces — no cluster-wide secret `list` required.
+            nullable: true
+            properties:
+              syncedNamespaces:
+                default: []
+                description: Namespaces the secret is currently synced into.
+                items:
+                  type: string
+                type: array
+            type: object
+        required:
+        - spec
+        title: Whisper
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

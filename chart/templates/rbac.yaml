@@ -1,6 +1,17 @@
 {{- if .Values.rbac.create -}}
-# Cluster-wide: the operator watches Secrets in all namespaces and replicates
-# them into the namespaces named by the whisperer.jeffl.es/namespaces annotation.
+{{- range .Values.drainNamespaces }}
+{{- if has . $.Values.writeNamespaces }}
+{{- fail (printf "namespace %q is in both writeNamespaces and drainNamespaces; they must be disjoint (a draining namespace is never a sync target)" .) }}
+{{- end }}
+{{- end }}
+# Scoped RBAC for the CRD-driven operator. The whole point of the Whisper CRD is
+# that the operator no longer needs cluster-wide Secret access: it watches its
+# own Whisper resources, reads source secrets only in its own namespace, and
+# writes copies only into the explicitly listed `writeNamespaces`. See
+# docs/adr/0003-crd-scoped-rbac.md.
+#
+# Cluster-wide, but NO secrets: watch Whispers (our own API group) and read
+# Namespace metadata to resolve + consent-check sync targets.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -8,9 +19,15 @@ metadata:
   labels:
     {{- include "..labels" . | nindent 4 }}
 rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["whisperer.jeffl.es"]
+    resources: ["whispers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["whisperer.jeffl.es"]
+    resources: ["whispers/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["whisperer.jeffl.es"]
+    resources: ["whispers/finalizers"]
+    verbs: ["update"]
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
@@ -29,6 +46,109 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "..serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+---
+# Operator namespace only: source secrets live here, and the source-secret watch
+# is scoped to this namespace (controller.rs `run` uses the operator's own
+# namespace). Read-only — the operator never writes secrets in its own namespace.
+# Events are recorded against the Whisper, which also lives here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "..fullname" . }}-source
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "..labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "..fullname" . }}-source
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "..labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "..fullname" . }}-source
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "..serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Secret-writer: the verbs needed to create, refresh, and reclaim copies. Defined
+# once as a ClusterRole but granted ONLY in the target namespaces below, via a
+# RoleBinding per `writeNamespaces` entry — so write access is confined to
+# exactly the namespaces an operator chooses to sync into, never cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "..fullname" . }}-secret-writer
+  labels:
+    {{- include "..labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+{{- range .Values.writeNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "..fullname" $ }}-secret-writer
+  namespace: {{ . }}
+  labels:
+    {{- include "..labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "..fullname" $ }}-secret-writer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "..serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- if .Values.drainNamespaces }}
+---
+# Secret-reclaimer: get + delete only — just enough to find and remove copies in a
+# namespace being decommissioned (drainNamespaces), without the ability to write
+# new ones. Granted per drain namespace so the operator can keep cleaning up there
+# until it's empty, then you remove the namespace from the list. See ADR 0003.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "..fullname" . }}-secret-reclaimer
+  labels:
+    {{- include "..labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "delete"]
+{{- range .Values.drainNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "..fullname" $ }}-secret-reclaimer
+  namespace: {{ . }}
+  labels:
+    {{- include "..labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "..fullname" $ }}-secret-reclaimer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "..serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
 ---
 # Namespaced: leader election (election.rs) holds a Lease in the operator's own namespace.
 apiVersion: rbac.authorization.k8s.io/v1

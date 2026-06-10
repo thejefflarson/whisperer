@@ -30,7 +30,9 @@ pub struct WhisperSpec {
     pub secret_name: String,
     /// Namespaces to replicate the secret into. Each must opt in with
     /// `whisperer.jeffl.es/allow-sync=true`; protected and unknown namespaces
-    /// are skipped (and logged).
+    /// are skipped (and logged). Bounded so a single Whisper can't inflate
+    /// per-reconcile work without limit (the API server rejects oversized specs).
+    #[schemars(length(max = 256))]
     pub namespaces: Vec<String>,
 }
 
