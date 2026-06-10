@@ -1,4 +1,5 @@
 pub mod controller;
+pub mod whisper;
 pub mod error;
 pub mod metrics;
 pub mod server;

@@ -4,8 +4,10 @@ use crate::{
     ext::SecretExt,
     labels::*,
     metrics::MetricState,
+    whisper::Whisper,
 };
 use futures::StreamExt;
+use serde_json::json;
 use k8s_openapi::api::core::v1::{Namespace, ObjectReference, Secret};
 use kube::{
     Api, Client, Resource, ResourceExt,
@@ -125,50 +127,28 @@ fn resolve_targets(wanted: &NSSet, namespaces: &[Namespace]) -> TargetResolution
     }
 }
 
-/// Resolve the set of namespaces a secret should be synced into.
+/// List the cluster's namespaces and resolve `wanted` down to the eligible,
+/// consenting targets, logging any that don't exist or haven't opted in.
 ///
-/// The target list comes from the user-authored `whisperer.jeffl.es/namespaces`
-/// annotation, but a namespace is only an eligible target if it has explicitly
-/// opted in with `whisperer.jeffl.es/allow-sync=true` and is not protected.
-/// This consent check is the authorization boundary: without it any user who
-/// can create a Secret could copy data into namespaces they don't control.
-/// It is an error to sync a secret without the namespace annotation.
-async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet, Error> {
+/// The consent check (`whisperer.jeffl.es/allow-sync=true`) is the authorization
+/// boundary: a Whisper can name any namespace, but a secret is only copied into
+/// one that has explicitly opted in and isn't protected.
+async fn resolve(wanted: &NSSet, client: &Client) -> Result<NSSet, Error> {
     let all = Api::<Namespace>::all(client.clone())
         .list(&ListParams::default())
         .await
         .map_err(Error::ListNamespaces)?;
 
-    let annotations = secret.annotations();
-    let wanted = if let Some(ns) = annotations.get(NAMESPACE_ANNOTATION) {
-        ns.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<NSSet>()
-    } else {
-        let name = secret.name_any();
-        let namespace = secret.namespace().unwrap_or(String::from(""));
-        let error = Error::MissingDestinationAnnotation {
-            name: name.clone(),
-            namespace: namespace.clone(),
-        };
-        error!(error = ?error, "missing namespace annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}', not syncing");
-        return Err(error);
-    };
-
-    let resolution = resolve_targets(&wanted, &all.items);
-
-    let name = secret.name_any();
-    let namespace = secret.namespace().unwrap_or(String::from(""));
+    let resolution = resolve_targets(wanted, &all.items);
     if !resolution.unknown.is_empty() {
         warn!(
-            "annotation {NAMESPACE_ANNOTATION} on secret '{name}' in namespace '{namespace}' includes unknown namespaces '{}'",
+            "requested namespaces '{}' do not exist",
             resolution.unknown.join(",")
         );
     }
     if !resolution.refused.is_empty() {
         warn!(
-            "secret '{name}' in namespace '{namespace}' requested namespaces '{}' that have not opted in via {ALLOW_SYNC_LABEL}=true; refusing to sync there",
+            "requested namespaces '{}' have not opted in via {ALLOW_SYNC_LABEL}=true; refusing to sync there",
             resolution.refused.join(",")
         );
     }
@@ -176,91 +156,108 @@ async fn secret_namespaces(secret: Arc<Secret>, client: Client) -> Result<NSSet,
     Ok(resolution.targets)
 }
 
-/// The main reconcile function. The algorithm here is simple:
-/// 1. If the secret's list of target namespaces does not include a namespace but there are secrets
-///    in that namespace with child labels, delete those secrets.
-/// 2. Loop through the namespaces listed in the secret's target annotation and whisper secrets
-///    from the provided parent secret.
-#[instrument(skip(ctx, secret))]
-async fn apply(secret: Arc<Secret>, ctx: Arc<Context>) -> Result<Action, Error> {
-    let labels = secret.labels();
-    let name = secret.name_any();
-    let namespace = secret.namespace().unwrap_or(String::from(""));
-    // test invariant: we don't have a whisperer.jeffl.es/sync label, strange! I don't think
-    // this should happen. But just in case we catch it.
-    if !labels.contains_key(ACTIVE_LABEL) {
-        return Err(Error::MissingLabel { name, namespace });
-    }
-
-    info!("reconciling {name} in {namespace}");
+/// Reconcile one Whisper: read its source secret, resolve the consenting
+/// targets, reclaim copies in namespaces that fell out of the target set (from
+/// the status record, so no cluster-wide list), write copies into the current
+/// targets, and record where they now live.
+#[instrument(skip(ctx, whisper))]
+async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error> {
     let client = &ctx.client;
-    let intersection = secret_namespaces(secret.clone(), client.clone()).await?;
+    let namespace = whisper.namespace().unwrap_or_default();
+    let secret_name = whisper.spec.secret_name.clone();
+    info!(
+        "reconciling whisper {} in {namespace} (secret {secret_name})",
+        whisper.name_any()
+    );
 
-    // If our list of namespaces has changed remove the old orphaned secrets.
-    // Scope to copies we actually marked (whisper=true) for this source.
-    let lp = ListParams {
-        label_selector: Some(format!(
-            "{WHISPER_LABEL}=true,{NAMESPACE_LABEL}={namespace},{NAME_LABEL}={name}"
-        )),
-        ..Default::default()
+    // The source secret lives in this Whisper's own namespace.
+    let src: Api<Secret> = Api::namespaced(client.clone(), &namespace);
+    let secret = match src.get_opt(&secret_name).await.map_err(Error::GetSecret)? {
+        Some(secret) => secret,
+        None => {
+            warn!("secret '{secret_name}' not found in '{namespace}'; will retry");
+            return Ok(Action::requeue(Duration::from_secs(30)));
+        }
     };
-    let api = Api::<Secret>::all(client.clone());
-    let orphans = api.list(&lp).await.map_err(Error::ListSecrets)?;
-    // An orphan is a managed copy of our source that is no longer in the target
-    // list. We verify managed-copy origin (not just labels) before deleting so a
-    // forged look-alike can't redirect the delete at a victim's secret.
-    let orphans = orphans.iter().filter(|it| {
-        it.name_any() == name
-            && is_managed_copy(it)
-            && !intersection.contains(&it.namespace().unwrap_or(String::from("")))
-    });
-    for orphan in orphans {
-        let ns = orphan.namespace().unwrap_or(String::from(""));
-        info!(
-            "namespace {} is not in {NAMESPACE_LABEL} on {name}, deleting child secret",
-            ns.clone()
-        );
-        delete(orphan.name_any(), ns.clone(), ctx.clone()).await?;
+
+    let wanted = whisper.spec.namespaces.iter().cloned().collect::<NSSet>();
+    let targets = resolve(&wanted, client).await?;
+    let synced = whisper
+        .status
+        .as_ref()
+        .map(|s| s.synced_namespaces.iter().cloned().collect::<NSSet>())
+        .unwrap_or_default();
+
+    // Orphans are namespaces we synced into before but aren't targets now. We
+    // know them from status, so we delete by name in those specific namespaces
+    // (verifying managed-copy origin) — never a cluster-wide secret list.
+    for ns in synced.difference(&targets) {
+        info!("reclaiming '{secret_name}' from '{ns}' (no longer a target)");
+        delete_copy(secret_name.clone(), ns.clone(), ctx.clone()).await?;
         ctx.record(
             &Notice {
                 type_: EventType::Normal,
                 reason: "Delete Requested".into(),
-                note: Some(format!(
-                    "Deleting {name} in {ns} that's not in the {NAMESPACE_LABEL} in {namespace}"
-                )),
+                note: Some(format!("Reclaiming '{secret_name}' from '{ns}'")),
                 action: "Delete".into(),
                 secondary: None,
             },
-            &secret.object_ref(&()),
+            &whisper.object_ref(&()),
         )
         .await?;
     }
 
-    // Patch and create new objects, this might happen multiple times, but we don't care because it
-    // is idempotent
-    for ns in intersection {
-        let api: Api<Secret> = Api::namespaced(client.clone(), &ns);
-        let secret = (*secret).clone().dup(ns.clone());
-        let patch = Patch::Apply(&secret);
+    // Write a copy into every current target (idempotent server-side apply).
+    for ns in &targets {
+        let api: Api<Secret> = Api::namespaced(client.clone(), ns);
+        let copy = secret.dup(ns.clone());
         let res = api
-            .patch(&name, &PatchParams::apply(FIELD_MANAGER), &patch)
+            .patch(
+                &secret_name,
+                &PatchParams::apply(FIELD_MANAGER),
+                &Patch::Apply(&copy),
+            )
             .await
             .map_err(Error::Patch)?;
         ctx.record(
             &Notice {
                 type_: EventType::Normal,
                 reason: "Sync Requested".into(),
-                note: Some(format!("Synced {name} from {namespace} to {ns}")),
+                note: Some(format!("Synced '{secret_name}' from '{namespace}' to '{ns}'")),
                 action: "Sync".into(),
                 secondary: Some(res.object_ref(&())),
             },
-            &secret.object_ref(&()),
+            &whisper.object_ref(&()),
         )
         .await?;
-        info!("created whisper of {name} from {namespace} to {ns}");
+        info!("whispered '{secret_name}' from '{namespace}' to '{ns}'");
     }
 
-    Ok(Action::requeue(Duration::from_secs(300)))
+    // Record where copies now live so the next reconcile can diff for orphans.
+    record_synced(&whisper, &namespace, &targets, client).await?;
+
+    Ok(Action::requeue(Duration::from_secs(600)))
+}
+
+/// Patch a Whisper's status with the namespaces its secret currently lives in.
+async fn record_synced(
+    whisper: &Whisper,
+    namespace: &str,
+    synced: &NSSet,
+    client: &Client,
+) -> Result<(), Error> {
+    let mut list = synced.iter().cloned().collect::<Vec<_>>();
+    list.sort();
+    let api: Api<Whisper> = Api::namespaced(client.clone(), namespace);
+    let patch = json!({ "status": { "syncedNamespaces": list } });
+    api.patch_status(
+        &whisper.name_any(),
+        &PatchParams::default(),
+        &Patch::Merge(&patch),
+    )
+    .await
+    .map_err(Error::PatchStatus)?;
+    Ok(())
 }
 
 async fn delete(name: String, namespace: String, ctx: Arc<Context>) -> Result<()> {
