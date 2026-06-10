@@ -87,6 +87,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache,mode=max
+          # SLSA build provenance + SBOM attestations, matching the other images.
+          provenance: mode=max
+          sbom: true
       # First-party installer verifies the cosign binary's own checksum, unlike
       # a bare curl|chmod of a release asset.
       - name: Install cosign
