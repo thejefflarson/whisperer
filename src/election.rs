@@ -273,37 +273,41 @@ async fn transition<F, Fut>(
     lease_result: Result<Option<Lease>>,
     operation: F,
     context: &str,
-) -> (State, bool)
+    state_tx: &watch::Sender<State>,
+) -> Result<State>
 where
     F: FnOnce(State, Api<Lease>, Option<Lease>) -> Fut,
     Fut: Future<Output = Result<State, Error>>,
 {
-    let new_state = {
-        // Extract the lease or step down and back off on error.
-        let lease = match lease_result {
-            Ok(lease) => lease,
-            Err(err) => {
-                warn!(error = ?err, context = context, "Lease operation failed");
-                let demoted = fail_safe(&current_state);
-                sleep(Duration::from_secs(BACKOFF)).await;
-                return (demoted.clone(), current_state != demoted);
-            }
-        };
-
-        // Perform the operation or step down and back off on error.
-        match operation(current_state.clone(), api, lease).await {
-            Ok(new_state) => new_state,
+    // Compute the next state; on any failure step down (fail_safe) and remember to
+    // back off afterwards.
+    let (new_state, errored) = match lease_result {
+        Err(err) => {
+            warn!(error = ?err, context = context, "Lease operation failed");
+            (fail_safe(&current_state), true)
+        }
+        Ok(lease) => match operation(current_state.clone(), api, lease).await {
+            Ok(new_state) => (new_state, false),
             Err(err) => {
                 warn!(error = ?err, context = context, "State transition failed");
-                let demoted = fail_safe(&current_state);
-                sleep(Duration::from_secs(BACKOFF)).await;
-                demoted
+                (fail_safe(&current_state), true)
             }
-        }
+        },
     };
 
-    let changed = current_state != new_state;
-    (new_state, changed)
+    // Publish the new state BEFORE backing off. Reconciliation gates on
+    // `is_leader()` reading this channel, so a step-down must be visible
+    // immediately — sleeping first would leave the operator reconciling as a
+    // leader it has already decided it is not, for the whole backoff.
+    if new_state != current_state {
+        state_tx
+            .send(new_state.clone())
+            .map_err(|_| Error::ChannelSend)?;
+    }
+    if errored {
+        sleep(Duration::from_secs(BACKOFF)).await;
+    }
+    Ok(new_state)
 }
 
 const LOCK_NAME: &str = "whisperer-controller-lock";
@@ -335,43 +339,34 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
             });
             select! {
                 change = deleted => {
-                    let (new_state, changed) = transition(
+                    state = transition(
                         state,
                         api.clone(),
                         change.map_err(Error::Watch),
                         acquire,
-                        "Lease creation failed"
-                    ).await;
-                    state = new_state;
-                    if changed {
-                        state_tx.send(state.clone()).map_err(|_| Error::ChannelSend)?;
-                    }
+                        "Lease creation failed",
+                        &state_tx,
+                    ).await?;
                 },
                 change = owner_changed => {
-                    let (new_state, changed) = transition(
+                    state = transition(
                         state,
                         api.clone(),
                         change.map_err(Error::Watch),
                         new_owner,
-                        "Owner change operation failed"
-                    ).await;
-                    state = new_state;
-                    if changed {
-                        state_tx.send(state.clone()).map_err(|_| Error::ChannelSend)?;
-                    }
+                        "Owner change operation failed",
+                        &state_tx,
+                    ).await?;
                 },
                 _ = timer => {
-                    let (new_state, changed) = transition(
+                    state = transition(
                         state,
                         api.clone(),
                         Ok(None),
                         renew,
-                        "Timer operation failed"
-                    ).await;
-                    state = new_state;
-                    if changed {
-                        state_tx.send(state.clone()).map_err(|_| Error::ChannelSend)?;
-                    }
+                        "Timer operation failed",
+                        &state_tx,
+                    ).await?;
                 }
                 // we're done here
                 _ = &mut cancel_rx => break
