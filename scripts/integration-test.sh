@@ -52,8 +52,8 @@ echo "==> running integration tests"
 # refuses to start when HTTP(S)_PROXY is set, even for a localhost target, so
 # clear any proxy for the test process.
 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
-# --run-ignored=all runs the #[ignore]d live-cluster tests too; run on one thread
-# so the shared namespaces the tests create don't collide.
-cargo nextest run --run-ignored all --test-threads=1
+# Run the #[ignore]d live-cluster tests (plain cargo test — no extra tooling), on
+# one thread so the shared namespaces the tests create don't collide.
+cargo test -- --ignored --test-threads=1
 
 echo "==> integration tests passed"
