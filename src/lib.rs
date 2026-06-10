@@ -3,6 +3,7 @@ pub mod error;
 pub mod metrics;
 pub mod server;
 pub mod telemetry;
+pub mod whisper;
 
 mod election;
 mod ext;

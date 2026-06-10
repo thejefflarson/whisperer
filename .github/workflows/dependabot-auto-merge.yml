@@ -8,7 +8,12 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    # Gate on the VERIFIED PR author, not github.actor: under pull_request_target,
+    # github.actor is whoever last triggered an event on the PR (spoofable by a
+    # third party re-triggering Dependabot), whereas pull_request.user.login is the
+    # PR's actual author. This job runs in the trusted base-repo context with a
+    # write token, so the distinction matters.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
       - name: Dependabot metadata
         id: metadata

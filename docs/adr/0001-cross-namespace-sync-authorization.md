@@ -38,12 +38,28 @@ are logged as "refused" and skipped.
 var) are refused even if labelled. See `PROTECTED_NAMESPACES` /
 `is_protected_namespace`.
 
-**Deletes — verify operator origin, not labels.** Every cross-namespace delete
-goes through `is_managed_copy`, which requires both the `whisper=true` marker
-*and* that the Secret was last applied by our server-side-apply field manager
-(`whisperer.jeffl.es`). `managedFields` is maintained by the API server and
-cannot be forged by a tenant, so a planted look-alike Secret cannot trick the
-operator into deleting a victim's data.
+**Deletes — require operator markers, but bound the damage with RBAC.** Every
+cross-namespace delete goes through `is_owned_copy`, which requires both the
+`whisper=true` marker *and* that the Secret lists our field manager
+(`whisperer.jeffl.es`) in `managedFields`.
+
+A correction to the original claim: the `managedFields` *manager name* is **not**
+an unforgeable identity. It is the client-supplied `fieldManager` parameter and is
+not tied to the writer's authenticated identity, so a tenant who can write Secrets
+in a target namespace can set it — like the `whisper=true` label, it's a public
+constant. (The `owner-uid` label is harder: its value is the Whisper's random UID,
+which a forger must *learn* by reading the Whisper or an existing copy, not guess —
+so it's a capability-gated marker, not a public constant. But anyone who can read a
+copy in that namespace is already inside the boundary.) The marker checks therefore
+raise the bar but are not, on their own, an authorization boundary. What actually prevents deletion of a victim's data is:
+(1) RBAC confines all deletes to `writeNamespaces`/`drainNamespaces`
+([ADR 0003](0003-crd-scoped-rbac.md)); (2) the delete carries the verified
+object's UID + resourceVersion as preconditions, so a swapped object is rejected
+(HTTP 409); and (3) the deployment assumption that those namespaces are **not
+writable by untrusted tenants** — if a tenant can write Secrets there, they can
+already tamper with anything in that namespace directly, with or without
+whisperer. The marker still earns its keep by ensuring the operator never deletes
+a secret that isn't marked as a copy at all.
 
 We did **not** add a source-namespace allowlist. An earlier plan paired the
 target opt-in with a source-namespace restriction, but the target consent label
@@ -59,4 +75,4 @@ a need to restrict which namespaces may *originate* syncs emerges.
   function); the consent label and origin check are the application-layer
   controls that make that grant safe to hold.
 - The pure decision functions (`is_consenting_namespace`, `resolve_targets`,
-  `is_protected_namespace`, `is_managed_copy`) are unit-tested in CI.
+  `is_protected_namespace`, `is_owned_copy`) are unit-tested in CI.

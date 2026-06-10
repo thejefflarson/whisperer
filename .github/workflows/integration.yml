@@ -1,0 +1,29 @@
+name: Integration
+permissions:
+  contents: read
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+jobs:
+  k3d:
+    # GitHub-hosted runners are ephemeral and have Docker preinstalled, so a k3d
+    # cluster here is safe to run for fork PRs too — unlike the self-hosted
+    # whisperer-runners used by build.yml, this job needs no secrets.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@b4eba5e9c1edfc2c97ea96a9f48f4c4a5f12fe1f # v2
+        with:
+          tool: cargo-nextest
+      - name: Install k3d
+        # Fetch the installer from the pinned tag (not the mutable `main` branch),
+        # so the script we pipe to bash is immutable along with the version it installs.
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/v5.8.3/install.sh | TAG=v5.8.3 bash
+      - name: Run integration tests against k3d
+        run: scripts/integration-test.sh
+        env:
+          RUST_BACKTRACE: 1

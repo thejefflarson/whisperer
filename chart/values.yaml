@@ -21,11 +21,32 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# RBAC: the operator needs cluster-wide access to Secrets and Namespaces, plus a
-# Lease in its own namespace for leader election. Disable only if you manage RBAC
-# out of band.
+# RBAC: the CRD-driven operator never gets cluster-wide Secret access. It watches
+# Whispers (its own API group) and Namespace metadata cluster-wide, reads source
+# secrets only in its own namespace, and writes copies only into the namespaces
+# listed in `writeNamespaces` (one RoleBinding each). Disable only if you manage
+# RBAC out of band. See docs/adr/0003-crd-scoped-rbac.md.
 rbac:
   create: true
+
+# Namespaces the operator is allowed to write secret copies into. A secret-writer
+# RoleBinding is created in each, granting get/create/update/patch/delete on
+# secrets there and nowhere else. This must be a superset of every Whisper's
+# spec.namespaces; a target that also consents (whisperer.jeffl.es/allow-sync=true)
+# but isn't listed here will be refused by the API server, not the operator.
+#
+# This set is also passed to the operator (WRITE_NAMESPACES) and name-probed to
+# rediscover orphaned copies if a Whisper's status is lost — recovery that needs
+# only `get` (no `list`, no cluster-wide secret access). See ADR 0003.
+writeNamespaces: []
+
+# Namespaces being DECOMMISSIONED — the safe way to stop syncing into a namespace
+# without stranding the copies already there. Move a namespace here from
+# writeNamespaces (don't just delete it): the operator keeps get+delete RBAC and
+# keeps probing it, but never writes new copies there and reclaims any it finds.
+# Once `kubectl get secret <whisper> -n <ns>` shows nothing, remove it from here.
+# Must be DISJOINT from writeNamespaces (the chart fails the render otherwise).
+drainNamespaces: []
 
 # This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
 serviceAccount:
@@ -73,17 +94,16 @@ service:
   # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
   port: 80
 
-resources: {}
-  # We usually recommend not to specify default resources and to leave this as a conscious
-  # choice for the user. This also increases chances charts run on environments with little
-  # resources, such as Minikube. If you do want to specify resources, uncomment the following
-  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
+# Bounded by default: the operator's reconcile load is driven by how many Whispers
+# exist (any tenant can create them), so a memory limit keeps a flood from growing
+# the pod until it's OOM-killed or starves its node. Tune for your cluster; set to
+# {} to opt out.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
 
 # This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 livenessProbe:
