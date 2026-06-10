@@ -34,11 +34,15 @@ cleanup() {
 trap cleanup EXIT
 
 echo "==> creating k3d cluster '$CLUSTER'"
-k3d cluster create "$CLUSTER" --wait --no-lb --k3s-arg "--disable=traefik@server:0"
+# Don't let k3d merge this throwaway cluster into the caller's default kubeconfig
+# (we write our own below). This also silences k3d's "multiple kubeconfigs
+# specified via KUBECONFIG" warning when the caller's KUBECONFIG lists several.
+k3d cluster create "$CLUSTER" --wait --no-lb \
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false \
+  --k3s-arg "--disable=traefik@server:0"
 
-# Point kubectl/kube-rs at the new cluster for the rest of this script. Set a
-# single path (k3d warns if KUBECONFIG already lists several) so neither kubectl
-# nor kube-rs touches the developer's real clusters.
+# Point kubectl/kube-rs at the new cluster for the rest of this script via a
+# single dedicated kubeconfig, so neither touches the developer's real clusters.
 unset KUBECONFIG
 export KUBECONFIG
 KUBECONFIG="$(k3d kubeconfig write "$CLUSTER")"
