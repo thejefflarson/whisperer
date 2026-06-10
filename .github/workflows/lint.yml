@@ -1,0 +1,30 @@
+name: Lint
+permissions:
+  contents: read
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+jobs:
+  # GitHub-hosted, no secrets — safe for fork PRs, and ubuntu-latest ships both the
+  # Rust toolchain and helm, so every gate lives in one place.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: rustfmt and clippy
+        run: |
+          rustup component add rustfmt clippy
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+      - name: CRD manifest matches src/whisper.rs
+        # chart/crds/whisper.yaml is generated; fail if it drifts from the type.
+        run: |
+          cargo run --quiet --bin crdgen | diff -u chart/crds/whisper.yaml - \
+            || { echo "::error::chart/crds/whisper.yaml is stale — regenerate with: cargo run --bin crdgen > chart/crds/whisper.yaml"; exit 1; }
+      - name: Helm lint
+        run: |
+          helm lint chart
+          helm template t chart --set 'writeNamespaces={a}' --set 'drainNamespaces={b}' > /dev/null
