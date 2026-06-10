@@ -215,10 +215,18 @@ fn resolve_targets(wanted: &NSSet, namespaces: &[Namespace]) -> TargetResolution
 ///
 /// A namespace is a target only if it exists, consents
 /// (`whisperer.jeffl.es/allow-sync=true`) and isn't protected — the authorization
-/// boundary — *and* isn't being decommissioned (`drain`). Draining namespaces are
-/// excluded here, alongside the other never-a-target rules, so every caller of
-/// `resolve` gets real targets without re-applying the exclusion.
-async fn resolve(wanted: &NSSet, drain: &NSSet, client: &Client) -> Result<NSSet, Error> {
+/// boundary — isn't being decommissioned (`drain`), AND (when `write` is
+/// configured) is one of the namespaces we're allowed to write into. Confining
+/// targets to `write` keeps the set we WRITE identical to the set
+/// orphan-recovery PROBES (`discover_copies`), so a copy can never land in a
+/// namespace we'd later be unable to find and reclaim. Every caller of `resolve`
+/// gets real targets without re-applying any of these exclusions.
+async fn resolve(
+    wanted: &NSSet,
+    write: &NSSet,
+    drain: &NSSet,
+    client: &Client,
+) -> Result<NSSet, Error> {
     let all = Api::<Namespace>::all(client.clone())
         .list(&ListParams::default())
         .await
@@ -238,7 +246,29 @@ async fn resolve(wanted: &NSSet, drain: &NSSet, client: &Client) -> Result<NSSet
         );
     }
 
-    Ok(resolution.targets.difference(drain).cloned().collect())
+    let mut targets = resolution
+        .targets
+        .difference(drain)
+        .cloned()
+        .collect::<NSSet>();
+
+    // Confine to writeNamespaces (when set): a consenting target we can't write
+    // into is also one we can't probe/reclaim, so refuse it here rather than
+    // letting the write fail at the API server and leave an untrackable copy.
+    // An empty `write` means unconfigured (e.g. local `cargo run`); keep the
+    // consent-only behaviour there.
+    if !write.is_empty() {
+        let outside = targets.difference(write).cloned().collect::<Vec<_>>();
+        if !outside.is_empty() {
+            warn!(
+                "requested namespaces '{}' are not in writeNamespaces; refusing to sync there (the operator can't reclaim copies it can't write)",
+                outside.join(",")
+            );
+            targets.retain(|t| write.contains(t));
+        }
+    }
+
+    Ok(targets)
 }
 
 /// What a single reconcile should do to the cluster: write a copy into every
@@ -297,9 +327,16 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
     };
 
     let wanted = whisper.spec.namespaces.iter().cloned().collect::<NSSet>();
-    // `resolve` excludes draining namespaces, so a target moved to `drainNamespaces`
-    // falls out of `targets` and its copy is reclaimed (into `to_delete`) below.
-    let targets = resolve(&wanted, &ctx.drain_namespaces, client).await?;
+    // `resolve` excludes draining namespaces and confines to writeNamespaces, so a
+    // target moved to `drainNamespaces` falls out of `targets` and its copy is
+    // reclaimed (into `to_delete`) below.
+    let targets = resolve(
+        &wanted,
+        &ctx.write_namespaces,
+        &ctx.drain_namespaces,
+        client,
+    )
+    .await?;
 
     // Where copies live is the status record UNION what a name-probe of the
     // write namespaces actually finds. Status is the fast path; the probe makes
@@ -317,6 +354,14 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
         to_write,
         to_delete,
     } = plan(&synced, &targets);
+
+    // Leadership can be lost between the dispatcher's check and here (the reads
+    // above are async). Re-check before any write/delete so a replica that has
+    // stepped down doesn't mutate secrets on a lease another replica may now hold.
+    if !ctx.state.is_leader() {
+        info!("no longer leader; deferring reconcile of '{copy_name}'");
+        return Ok(Action::requeue(Duration::from_secs(5)));
+    }
 
     // Orphans are namespaces we synced into before but aren't targets now. We
     // know them from status plus the probe, so we delete by name in those
@@ -342,6 +387,19 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
     // place rather than leaving an old-named orphan.
     for ns in &to_write {
         let api: Api<Secret> = Api::namespaced(client.clone(), ns);
+        // Never adopt a pre-existing secret we didn't create: if an object of this
+        // name already exists in the target and isn't one of our copies, refuse to
+        // overwrite it. Otherwise the server-side apply would stamp our ownership
+        // markers onto someone else's secret (clobbering its data and letting a
+        // later cleanup delete it). Skip with a warning rather than churn.
+        if let Some(existing) = api.get_opt(&copy_name).await.map_err(Error::GetSecret)?
+            && !is_owned_copy(&existing, &owner_uid)
+        {
+            warn!(
+                "refusing to sync '{copy_name}' into '{ns}': a secret of that name already exists there and is not a whisperer copy"
+            );
+            continue;
+        }
         let copy = secret.dup(&copy_name, &owner_uid, &namespace, ns.clone());
         let res = api
             .patch(
@@ -448,6 +506,14 @@ async fn delete_copy(
 /// user's.
 #[instrument(skip(ctx, whisper))]
 async fn cleanup(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action> {
+    // Re-check leadership before deleting (the dispatcher's check may be stale).
+    if !ctx.state.is_leader() {
+        info!(
+            "no longer leader; deferring cleanup of '{}'",
+            whisper.name_any()
+        );
+        return Ok(Action::requeue(Duration::from_secs(5)));
+    }
     let copy_name = whisper.name_any();
     let owner_uid = whisper.uid().unwrap_or_default();
     let mut copies = whisper
@@ -970,37 +1036,9 @@ mod test {
             .unwrap();
 
         // Build a leader Context with the given write/drain namespace sets.
-        let make_ctx = |write: &[&str], drain: &[&str]| {
-            let recorder = Recorder::new(
-                client.clone(),
-                Reporter {
-                    controller: "whisperer".into(),
-                    instance: env::var("CONTROLLER_POD_NAME").ok(),
-                },
-            );
-            let exporter = MetricExporter::builder()
-                .with_http()
-                .with_protocol(Protocol::HttpBinary)
-                .build()
-                .unwrap();
-            let provider = SdkMeterProvider::builder()
-                .with_periodic_exporter(exporter)
-                .build();
-            let metrics = MetricState::new(provider.meter("whisperer"));
-            let (_, rx) = watch::channel(State::Leading);
-            Arc::new(Context {
-                client: client.clone(),
-                recorder,
-                metrics,
-                state: LeaderState::new(rx),
-                write_namespaces: write.iter().map(|s| s.to_string()).collect(),
-                drain_namespaces: drain.iter().map(|s| s.to_string()).collect(),
-            })
-        };
-
         // The operator may write into both consenting targets; this is also the
         // set the orphan name-probe scans.
-        let data = make_ctx(&["target", "target2"], &[]);
+        let data = leader_ctx(&client, &["target", "target2"], &[]);
 
         // Copies are identified cluster-wide by the whisper marker label.
         let all_secrets = Api::<Secret>::all(client.clone());
@@ -1118,7 +1156,7 @@ mod test {
         // spec and still consents). The operator must NOT write there anymore and
         // must reclaim the copy already in it — proving a namespace can be drained
         // without stranding copies, even before it's removed from the spec.
-        let drain = make_ctx(&["target2"], &["target"]);
+        let drain = leader_ctx(&client, &["target2"], &["target"]);
         let whisper = Arc::new(whispers.get_status("sync").await.unwrap());
         let _ = apply(whisper, drain).await.unwrap();
         let items = all_secrets.list(&copy_params).await.unwrap().items;
@@ -1156,5 +1194,137 @@ mod test {
                 namespaces,
             },
         )
+    }
+
+    /// Build a leader `Context` for live-cluster tests with the given write/drain
+    /// namespace sets.
+    fn leader_ctx(client: &Client, write: &[&str], drain: &[&str]) -> Arc<Context> {
+        let recorder = Recorder::new(
+            client.clone(),
+            Reporter {
+                controller: "whisperer".into(),
+                instance: env::var("CONTROLLER_POD_NAME").ok(),
+            },
+        );
+        let exporter = MetricExporter::builder()
+            .with_http()
+            .with_protocol(Protocol::HttpBinary)
+            .build()
+            .unwrap();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter)
+            .build();
+        let metrics = MetricState::new(provider.meter("whisperer"));
+        let (_, rx) = watch::channel(State::Leading);
+        Arc::new(Context {
+            client: client.clone(),
+            recorder,
+            metrics,
+            state: LeaderState::new(rx),
+            write_namespaces: write.iter().map(|s| s.to_string()).collect(),
+            drain_namespaces: drain.iter().map(|s| s.to_string()).collect(),
+        })
+    }
+
+    /// A Whisper whose name collides with a pre-existing, non-whisperer secret in
+    /// a consenting target must NOT adopt or overwrite it (which would also let a
+    /// later cleanup delete it). Covers the contract-review finding.
+    #[tokio::test]
+    #[ignore = "uses k8s api"]
+    async fn apply_refuses_to_adopt_foreign_secret() {
+        let client = Client::try_default().await.unwrap();
+        let nsapi: Api<Namespace> = Api::all(client.clone());
+        for (name, consents) in [("adopt-src", false), ("adopt-tgt", true)] {
+            let labels = consents
+                .then(|| BTreeMap::from([(ALLOW_SYNC_LABEL.to_string(), "true".to_string())]));
+            nsapi
+                .create(
+                    &PostParams::default(),
+                    &Namespace {
+                        metadata: ObjectMeta {
+                            name: Some(name.to_string()),
+                            labels,
+                            ..ObjectMeta::default()
+                        },
+                        ..Namespace::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        // Source secret the Whisper replicates.
+        let src: Api<Secret> = Api::namespaced(client.clone(), "adopt-src");
+        let mk = |name: &str, ns: &str, val: &[u8], fm: &str| {
+            let s = Secret {
+                data: Some(BTreeMap::from([(
+                    "k".to_string(),
+                    ByteString(val.to_vec()),
+                )])),
+                metadata: ObjectMeta {
+                    name: Some(name.to_string()),
+                    namespace: Some(ns.to_string()),
+                    ..ObjectMeta::default()
+                },
+                ..Secret::default()
+            };
+            (s, PatchParams::apply(fm))
+        };
+        let (s, pp) = mk("s", "adopt-src", b"ours", "whisperer.jeffl.es");
+        src.patch("s", &pp, &Patch::Apply(&s)).await.unwrap();
+
+        // A PRE-EXISTING foreign secret named after the Whisper ("adopt"), written
+        // by a different field manager, with no whisperer markers.
+        let tgt: Api<Secret> = Api::namespaced(client.clone(), "adopt-tgt");
+        let (victim, vpp) = mk("adopt", "adopt-tgt", b"victim", "someone-else");
+        tgt.patch("adopt", &vpp, &Patch::Apply(&victim))
+            .await
+            .unwrap();
+
+        // Whisper named "adopt" -> its copy name collides with the victim secret.
+        let whispers: Api<Whisper> = Api::namespaced(client.clone(), "adopt-src");
+        let whisper = Whisper::new(
+            "adopt",
+            WhisperSpec {
+                secret_name: "s".to_string(),
+                namespaces: vec!["adopt-tgt".to_string()],
+            },
+        );
+        whispers
+            .patch(
+                "adopt",
+                &PatchParams::apply(FIELD_MANAGER),
+                &Patch::Apply(&whisper),
+            )
+            .await
+            .unwrap();
+
+        let data = leader_ctx(&client, &["adopt-tgt"], &[]);
+        let whisper = Arc::new(whispers.get("adopt").await.unwrap());
+        let _ = apply(whisper, data).await.unwrap();
+
+        // The victim must be untouched: original data, no owner-uid stamped.
+        let after = tgt.get("adopt").await.unwrap();
+        assert_eq!(
+            after.data.unwrap().get("k").unwrap().0,
+            b"victim",
+            "foreign secret data must not be overwritten"
+        );
+        assert!(
+            !after
+                .metadata
+                .labels
+                .unwrap_or_default()
+                .contains_key(OWNER_UID_LABEL),
+            "foreign secret must not be adopted (no owner-uid stamped)"
+        );
+
+        whispers
+            .delete("adopt", &DeleteParams::default())
+            .await
+            .unwrap();
+        for ns in ["adopt-src", "adopt-tgt"] {
+            nsapi.delete(ns, &DeleteParams::default()).await.unwrap();
+        }
     }
 }
