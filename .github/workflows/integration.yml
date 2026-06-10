@@ -15,10 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2.81.9
-        with:
-          tool: cargo-nextest
       - name: Install k3d
         # Fetch the installer from the pinned tag (not the mutable `main` branch),
         # so the script we pipe to bash is immutable along with the version it installs.
