@@ -1,7 +1,9 @@
 [package]
 name = "whisperer"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
+# `cargo run` is ambiguous with the crdgen bin; default to the operator.
+default-run = "whisperer"
 
 [dependencies]
 anyhow = "1.0.102"

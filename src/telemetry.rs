@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use anyhow::Result;
 use opentelemetry::{global, metrics::MeterProvider, trace::TracerProvider as _};
 use opentelemetry_otlp::{MetricExporter, Protocol, SpanExporter, WithExportConfig};
@@ -83,9 +85,13 @@ pub fn init() -> Result<Telemetry> {
     let otel =
         tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(DEFAULT_SERVICE_NAME));
     let filter = EnvFilter::from_default_env();
+    // tracing-subscriber's fmt layer defaults ANSI colors ON with no TTY
+    // detection, so in Kubernetes (stdout piped to a log collector) the escape
+    // codes end up in the logs. Only colorize when stdout is a real terminal.
+    let ansi = std::io::stdout().is_terminal();
     tracing_subscriber::registry()
         .with(otel)
-        .with(fmt::layer().with_filter(filter))
+        .with(fmt::layer().with_ansi(ansi).with_filter(filter))
         .init();
 
     // Warn when OTLP goes over plaintext HTTP to a non-loopback address — metric
