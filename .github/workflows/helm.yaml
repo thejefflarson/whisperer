@@ -17,6 +17,13 @@ jobs:
     runs-on: whisperer-runners
     if: github.event_name != 'pull_request'
     steps:
+      # chart-releaser-action shells out to git; the runner image doesn't ship
+      # one (actions/checkout falls back to its REST-API path), so install it.
+      - name: Ensure git
+        run: |
+          if ! command -v git >/dev/null; then
+            apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          fi
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: Log into registry
