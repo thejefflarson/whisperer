@@ -18,15 +18,15 @@ impl Metrics {
     pub fn new(meter: Meter) -> Self {
         Self {
             reconciliations: meter
-                .u64_counter("reconciliations")
+                .u64_counter("whisperer.reconciliations")
                 .with_description("number of reconciliations performed")
                 .build(),
             failures: meter
-                .u64_counter("failures")
+                .u64_counter("whisperer.failures")
                 .with_description("number of failed reconciliations")
                 .build(),
             duration: meter
-                .f64_histogram("duration")
+                .f64_histogram("whisperer.duration")
                 .with_description("duration of reconciliation attempts")
                 .with_unit("ms")
                 .build(),
