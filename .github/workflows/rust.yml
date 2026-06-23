@@ -22,11 +22,23 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
+    # sccache → shared in-cluster redis (cluster repo: charts/sccache). whisperer-runners
+    # is meshed + admitted by the sccache-redis authz; a workspace dep (incl. C/C++ via
+    # whisper.cpp) compiled by any repo's CI is reused here. URL is internal/mesh-gated,
+    # no credentials. CARGO_INCREMENTAL=0 — sccache can't cache incremental artefacts.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_REDIS: redis://sccache-redis.dev.svc.cluster.local:6379
+      CARGO_INCREMENTAL: "0"
     steps:
     - name: Enable rust
       run: |
         echo "$HOME/.cargo/bin" >> $GITHUB_PATH
     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+    - name: Install sccache
+      # --force: a warm rust-cache restores cargo's "already installed" metadata but
+      # not the binary, so a plain binstall skips and sccache ends up off PATH.
+      run: cargo binstall --no-confirm --force sccache
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
     - name: Audit dependencies
       run: |
@@ -36,6 +48,9 @@ jobs:
       run: cargo nextest run
       env:
         RUST_BACKTRACE: 1
+    - name: sccache stats
+      if: always()
+      run: sccache --show-stats
   docker:
     runs-on: whisperer-runners
     if: github.event_name != 'pull_request'
