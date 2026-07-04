@@ -87,17 +87,28 @@ jobs:
         with:
           driver: remote
           endpoint: tcp://buildkit.dev.svc.cluster.local:1234
+          platforms: linux/amd64
           # buildkit enforces mTLS; client cert is mounted into the runner pod.
           driver-opts: |
             cacert=/home/runner/buildkit-certs/ca.crt
             cert=/home/runner/buildkit-certs/tls.crt
             key=/home/runner/buildkit-certs/tls.key
+          # Second native builder: arm64 Pi. Shares the buildkit-ca, so the same
+          # client cert authenticates. buildx runs each arch on its native builder
+          # and merges — no QEMU emulation.
+          append: |
+            - endpoint: tcp://buildkit-arm64.dev.svc.cluster.local:1234
+              platforms: linux/arm64
+              driver-opts:
+                - cacert=/home/runner/buildkit-certs/ca.crt
+                - cert=/home/runner/buildkit-certs/tls.crt
+                - key=/home/runner/buildkit-certs/tls.key
       - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
-          # Multi-arch: BuildKit (cluster charts/actions/buildkit, on the amd64 node with QEMU) builds amd64 native + arm64 emulated so the image runs on both the Pis and the BOSGAME amd64 node.
+          # Multi-arch: buildx targets two native BuildKit builders — amd64 (buildkit, node-3) + arm64 (buildkit-arm64, arm64 Pi) — building each arch on its own architecture and merging. No QEMU emulation.
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
