@@ -97,6 +97,8 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
+          # Multi-arch: BuildKit (cluster charts/actions/buildkit, on the amd64 node with QEMU) builds amd64 native + arm64 emulated so the image runs on both the Pis and the BOSGAME amd64 node.
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
