@@ -19,8 +19,8 @@ WORKDIR /app
 # glibc (-gnu) build to match the bookworm toolchain (not musl).
 RUN set -eux; ver=0.16.0; \
     case "$(uname -m)" in x86_64) a=x86_64 ;; aarch64) a=aarch64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac; \
-    wget -qO- "https://github.com/mozilla/sccache/releases/download/v${ver}/sccache-v${ver}-${a}-unknown-linux-gnu.tar.gz" \
-      | tar -xz -C /usr/local/bin --strip-components=1 "sccache-v${ver}-${a}-unknown-linux-gnu/sccache"
+    wget -qO- "https://github.com/mozilla/sccache/releases/download/v${ver}/sccache-v${ver}-${a}-unknown-linux-musl.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=1 "sccache-v${ver}-${a}-unknown-linux-musl/sccache"
 ENV RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
     SCCACHE_REDIS=redis://sccache-redis.dev.svc.cluster.local:6379
 
