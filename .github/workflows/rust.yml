@@ -40,6 +40,10 @@ jobs:
       # not the binary, so a plain binstall skips and sccache ends up off PATH.
       run: cargo binstall --no-confirm --force sccache
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      with:
+        # sccache → in-cluster redis already covers compile reuse, so caching
+        # target/ is redundant and just bloats the restore over the home uplink.
+        cache-targets: false
     - name: Audit dependencies
       run: |
         cargo install cargo-audit --locked
