@@ -63,6 +63,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
+      attestations: write # Sigstore-signed SLSA build-provenance attestation (protector verifies it)
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -136,3 +137,12 @@ jobs:
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "missing/invalid build digest: '$DIGEST'" >&2; exit 1; }
           echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+      # Sigstore-signed SLSA build-provenance attestation (keyless: Fulcio + Rekor), pushed as an
+      # OCI referrer — what protector's provenance observer verifies to "provenance-verified".
+      - name: Attest build provenance (Sigstore-signed SLSA)
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build-and-push.outputs.digest }}
+          push-to-registry: true
