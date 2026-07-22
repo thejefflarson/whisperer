@@ -110,7 +110,7 @@ jobs:
                 - key=/home/runner/buildkit-certs/tls.key
       - name: Build and push Docker image
         id: build-and-push
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           # Multi-arch: buildx targets two native BuildKit builders — amd64 (buildkit, node-3) + arm64 (buildkit-arm64, arm64 Pi) — building each arch on its own architecture and merging. No QEMU emulation.
