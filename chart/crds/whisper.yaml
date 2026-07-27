@@ -5,7 +5,6 @@ metadata:
 spec:
   group: whisperer.jeffl.es
   names:
-    categories: []
     kind: Whisper
     plural: whispers
     shortNames:
