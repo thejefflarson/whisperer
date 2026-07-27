@@ -22,13 +22,21 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    # sccache → shared in-cluster redis (cluster repo: charts/sccache). whisperer-runners
-    # is meshed + admitted by the sccache-redis authz; a workspace dep (incl. C/C++ via
-    # whisper.cpp) compiled by any repo's CI is reused here. URL is internal/mesh-gated,
-    # no credentials. CARGO_INCREMENTAL=0 — sccache can't cache incremental artefacts.
+    # sccache -> the shared Cloudflare R2 bucket (cluster repo: charts/sccache,
+    # ADR-0020). The backend config -- SCCACHE_BUCKET/ENDPOINT/REGION plus the
+    # bucket-scoped S3 token -- is injected into the runner POD from the `sccache-r2`
+    # Secret via envFrom, so none of it belongs in this workflow and no credential is
+    # committed here.
+    #
+    # The redis backend is deliberately NOT set here any more (JEF-564): sccache selects
+    # ONE backend from its env, so setting both would make which one you get an
+    # implementation detail of sccache's precedence -- the R2 cutover could read as done
+    # while every build still went to redis. If the pod env is missing, sccache degrades
+    # to a local disk cache: slower, green, and obvious.
+    # A workspace dep (incl. C/C++ via whisper.cpp) compiled by any repo's CI is reused here.
+    # CARGO_INCREMENTAL=0 -- sccache can't cache incremental artefacts.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_REDIS: redis://sccache-redis.dev.svc.cluster.local:6379
       CARGO_INCREMENTAL: "0"
     steps:
     - name: Enable rust
