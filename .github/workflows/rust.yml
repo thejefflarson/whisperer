@@ -141,7 +141,7 @@ jobs:
       # OCI referrer — what protector's provenance observer verifies to "provenance-verified".
       - name: Attest build provenance (Sigstore-signed SLSA)
         if: ${{ github.event_name != 'pull_request' }}
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build-and-push.outputs.digest }}
