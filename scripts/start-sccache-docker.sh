@@ -6,10 +6,17 @@
 # calls it.
 #
 # Usage:
-#   sh scripts/start-sccache-docker.sh              # start a server, never fail
+#   sh scripts/start-sccache-docker.sh              # start a server, degrade R2 to local disk on demand
 #   sh scripts/start-sccache-docker.sh --selftest   # run the built-in fixtures
 #
-# Exit status: ALWAYS 0 for the start path — that is the whole point (see below).
+# Exit status: 0 once a cache server (R2 or local disk) is actually listening.
+# Degrading R2 -> local disk is soft, per the rationale below, and never fails
+# the build. But if even the local-disk fallback can't bind, that is NOT another
+# soft case: on this shared BuildKit netns it almost always means
+# SCCACHE_SERVER_PORT collided with a concurrent build (see the Dockerfile
+# comment on that variable), and a swallowed failure here would let cargo
+# silently attach to that OTHER build's sccache server — and its R2 credentials
+# — instead of a local one. So that path is the one case this script fails on.
 #
 # WHY SECRETS AND NOT ENV/BUILD-ARGS. `ENV AWS_SECRET_ACCESS_KEY=…` or an ARG
 # consumed in a layer persists in `docker history` for every image we push to
@@ -61,9 +68,17 @@ secret() {
 # not enough, a non-empty bucket still wins.
 fall_back_to_local_disk() {
     sccache --stop-server >/dev/null 2>&1 || true
-    env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+    if env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
         SCCACHE_BUCKET= SCCACHE_DIR=/app/target/.sccache-local \
-        sccache --start-server >/dev/null 2>&1 || true
+        sccache --start-server >/dev/null 2>&1; then
+        return 0
+    fi
+    # Deliberately NOT `|| true`'d away: a bind failure here on a fixed
+    # SCCACHE_SERVER_PORT almost always means a concurrent build on this same
+    # BuildKit daemon already owns that port, so cargo would otherwise silently
+    # talk to that build's sccache server instead of one of its own.
+    echo "sccache: local disk cache failed to start (possible SCCACHE_SERVER_PORT collision on this BuildKit daemon)" >&2
+    return 1
 }
 
 start_sccache() {
@@ -74,7 +89,7 @@ start_sccache() {
     if [ -z "${SCCACHE_BUCKET}" ]; then
         echo "sccache: no R2 config in the build secrets — using a local disk cache" >&2
         fall_back_to_local_disk
-        return 0
+        return $?
     fi
 
     AWS_ACCESS_KEY_ID=$(secret AWS_ACCESS_KEY_ID)
@@ -100,7 +115,7 @@ start_sccache() {
 
     echo "sccache: R2 backend unreachable — falling back to local disk cache" >&2
     fall_back_to_local_disk
-    return 0
+    return $?
 }
 
 # ── Self-test ────────────────────────────────────────────────────────────────
@@ -113,12 +128,21 @@ selftest() {
     trap 'rm -rf "${_tmp}"' EXIT
     mkdir -p "${_tmp}/bin" "${_tmp}/secrets"
 
+    # STUB_START_FAILS fails an attempt with SCCACHE_BUCKET set (the R2/S3
+    # backend); STUB_LOCAL_FAILS fails one with it empty (the local-disk
+    # fallback that fall_back_to_local_disk starts) — modeling the two failures
+    # separately since a real bucket-unreachable and a real port collision are
+    # independent events.
     cat >"${_tmp}/bin/sccache" <<'STUB'
 #!/bin/sh
 if [ "${1:-}" = "--start-server" ]; then
   echo "start bucket=[${SCCACHE_BUCKET:-}] dir=[${SCCACHE_DIR:-}] key=[${AWS_ACCESS_KEY_ID:-}]" \
     >>"${STUB_LOG}"
-  [ "${STUB_START_FAILS:-0}" = "1" ] && exit 1
+  if [ -n "${SCCACHE_BUCKET:-}" ]; then
+    [ "${STUB_START_FAILS:-0}" = "1" ] && exit 1
+  else
+    [ "${STUB_LOCAL_FAILS:-0}" = "1" ] && exit 1
+  fi
 fi
 exit 0
 STUB
@@ -176,6 +200,21 @@ STUB
         _fails=$((_fails + 1))
     else
         echo "  ok   R2 down -> 3 attempts before degrading"
+    fi
+
+    # 4. No R2 config AND the local-disk fallback itself fails to bind — the
+    #    SCCACHE_SERVER_PORT-collision case (two builds on the same BuildKit
+    #    daemon picking the same port). This must be a hard failure: silently
+    #    continuing would leave cargo talking to some OTHER build's sccache
+    #    server. Regression test for the bug this replaces (`|| true` used to
+    #    swallow exactly this).
+    rm -f "${_tmp}/secrets/SCCACHE_BUCKET" "${_tmp}/secrets/AWS_ACCESS_KEY_ID"
+    STUB_LOG="${_tmp}/log4"; : >"${STUB_LOG}"
+    if STUB_LOCAL_FAILS=1 start_sccache >/dev/null 2>&1; then
+        echo "  FAIL local-disk bind collision -> must exit nonzero, exited 0" >&2
+        _fails=$((_fails + 1))
+    else
+        echo "  ok   local-disk bind collision -> exits nonzero (surfaced, not swallowed)"
     fi
 
     if [ "${_fails}" -ne 0 ]; then

@@ -91,6 +91,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job never runs another git command against this checkout: the
+          # docker build below only reads files off disk (with .git excluded via
+          # .dockerignore), login/sign/attest all authenticate via
+          # secrets.GITHUB_TOKEN or Sigstore OIDC, not a persisted git credential.
+          # Persisting one would otherwise sit in .git/config on disk with
+          # `packages: write` scope for the run's duration.
+          persist-credentials: false
       - name: Log into registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
