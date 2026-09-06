@@ -26,14 +26,18 @@ jobs:
     # ADR-0020). The backend config -- SCCACHE_BUCKET/ENDPOINT/REGION plus the
     # bucket-scoped S3 token -- is injected into the runner POD from the `sccache-r2`
     # Secret via envFrom, so none of it belongs in this workflow and no credential is
-    # committed here.
+    # committed here. A workspace dep (incl. C/C++ via whisper.cpp) compiled by any
+    # repo's CI is reused here.
     #
     # The redis backend is deliberately NOT set here any more (JEF-564): sccache selects
     # ONE backend from its env, so setting both would make which one you get an
     # implementation detail of sccache's precedence -- the R2 cutover could read as done
-    # while every build still went to redis. If the pod env is missing, sccache degrades
-    # to a local disk cache: slower, green, and obvious.
-    # A workspace dep (incl. C/C++ via whisper.cpp) compiled by any repo's CI is reused here.
+    # while every build still went to redis.
+    #
+    # The "Start sccache" step below probes R2 and degrades to a local disk cache if it
+    # can't be reached -- sccache's S3 backend is EAGER, so an unreachable bucket would
+    # otherwise hard-fail the job on "sccache: Timed out waiting for server startup"
+    # rather than degrade to the slow-but-green local cache the redis backend degraded to.
     # CARGO_INCREMENTAL=0 -- sccache can't cache incremental artefacts.
     env:
       RUSTC_WRAPPER: sccache
@@ -47,9 +51,21 @@ jobs:
       # --force: a warm rust-cache restores cargo's "already installed" metadata but
       # not the binary, so a plain binstall skips and sccache ends up off PATH.
       run: cargo binstall --no-confirm --force sccache
+    # Fail-soft sccache backend: prefer the shared R2 bucket, degrade to a LOCAL disk
+    # cache if it's unreachable instead of hard-failing on "Timed out waiting for
+    # server startup". GITHUB_ENV can't unset a var, so the fallback exports an EMPTY
+    # SCCACHE_BUCKET alongside SCCACHE_DIR — see the measurements in the script.
+    - name: Start sccache (fail-soft to local disk if R2 is down)
+      run: bash .github/scripts/start-sccache.sh
+    - name: Selftest the Docker-build fail-soft script
+      # start-sccache-docker.sh is the in-build twin of the step above (same fail-soft
+      # shape, BuildKit secrets instead of pod env) — its --selftest drives the three
+      # states (no config / R2 up / R2 down) against stub binaries so a regression here
+      # is caught on every PR instead of by a burned release tag.
+      run: sh scripts/start-sccache-docker.sh --selftest
     - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       with:
-        # sccache → in-cluster redis already covers compile reuse, so caching
+        # sccache → the shared R2 bucket already covers compile reuse, so caching
         # target/ is redundant and just bloats the restore over the home uplink.
         cache-targets: false
     - name: Audit dependencies
@@ -75,6 +91,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # This job never runs another git command against this checkout: the
+          # docker build below only reads files off disk (with .git excluded via
+          # .dockerignore), login/sign/attest all authenticate via
+          # secrets.GITHUB_TOKEN or Sigstore OIDC, not a persisted git credential.
+          # Persisting one would otherwise sit in .git/config on disk with
+          # `packages: write` scope for the run's duration.
+          persist-credentials: false
       - name: Log into registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
@@ -128,6 +152,28 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-cache,mode=max
+          # sccache's shared R2 bucket for the Rust image build. Every value — credential
+          # AND plain config — goes in as a BUILD SECRET, not ENV/build-args:
+          #   * `AWS_*` is a credential and an ENV/ARG persists in `docker history` on every
+          #     image we push to ghcr, i.e. it would publish the R2 token;
+          #   * the five SCCACHE_* values are not sensitive, but a build-arg is part of the
+          #     LAYER CACHE KEY, so shipping them that way would invalidate the registry layer
+          #     cache on every R2 reconfiguration. Secrets are excluded from the cache key.
+          # `secret-envs` (key=envname) reads them straight out of the RUNNER POD's env, where
+          # the `sccache-r2` Secret is injected via envFrom (cluster repo:
+          # charts/actions/runners/values.yaml) — this repo has no Actions secret for R2, and
+          # this needs no `$GITHUB_ENV` lift step or on-disk secret file.
+          # Unset (e.g. the Secret is missing) → the secret mounts are empty and
+          # scripts/start-sccache-docker.sh degrades the build to a local disk cache rather
+          # than failing it.
+          secret-envs: |
+            AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID
+            AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY
+            SCCACHE_BUCKET=SCCACHE_BUCKET
+            SCCACHE_ENDPOINT=SCCACHE_ENDPOINT
+            SCCACHE_REGION=SCCACHE_REGION
+            SCCACHE_S3_KEY_PREFIX=SCCACHE_S3_KEY_PREFIX
+            SCCACHE_S3_USE_SSL=SCCACHE_S3_USE_SSL
           # SLSA build provenance + SBOM attestations, matching the other images.
           provenance: true
           sbom: true
