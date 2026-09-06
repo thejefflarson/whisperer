@@ -7,7 +7,9 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS builder
 WORKDIR /app
 
-# sccache (shared in-cluster Redis rustc cache). cargo-chef was removed: sccache
+# sccache — the dep-caching layer, backed by the shared Cloudflare R2 bucket
+# (cluster repo: charts/sccache, ADR-0020), so a workspace dep compiled by any
+# repo's CI (or image build) is reused here. cargo-chef was removed: sccache
 # and cargo-chef can't coexist for Rust — sccache keys its cache on a hash of
 # every `--extern` input, and cargo always passes `.rmeta` metadata externs, but
 # cargo-chef's `cook` leaves the shared target dir in a state where those extern
@@ -21,21 +23,34 @@ RUN set -eux; ver=0.16.0; \
     case "$(uname -m)" in x86_64) a=x86_64 ;; aarch64) a=aarch64 ;; *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; esac; \
     wget -qO- "https://github.com/mozilla/sccache/releases/download/v${ver}/sccache-v${ver}-${a}-unknown-linux-musl.tar.gz" \
       | tar -xz -C /usr/local/bin --strip-components=1 "sccache-v${ver}-${a}-unknown-linux-musl/sccache"
-ENV RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
-    SCCACHE_REDIS=redis://sccache-redis.dev.svc.cluster.local:6379
+ENV RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0
 
-# Build application. sccache is a hard gate (no local fallback): a unique random
-# SCCACHE_SERVER_PORT is required because BuildKit build sandboxes share a netns,
-# so concurrent builds would collide on the fixed default port 4226
-# ("Address in use"). The ephemeral target mount means the binary is cp'd out to
-# /app for the final stage, in the same RUN so the mount is still present.
+# Build application. The R2 config + its bucket-scoped AWS_* token arrive as BuildKit
+# BUILD SECRETS (rust.yml's `secret-envs`, fed from the runner pod's `sccache-r2`
+# envFrom) — never ENV or a build-arg, both of which persist in `docker history` on
+# every image we push. scripts/start-sccache-docker.sh probes R2 and degrades to a
+# local disk cache if it can't be reached: sccache's S3 backend is EAGER (unlike the
+# in-cluster redis it replaced, an unreachable bucket FAILS `--start-server` outright),
+# and a hard gate here would fail a release on an R2 blip or an expired token — costing
+# an immutable version tag for what a cache miss already costs. A unique random
+# SCCACHE_SERVER_PORT is required because BuildKit build sandboxes share a netns, so
+# concurrent builds would collide on the fixed default port 4226 ("Address in use").
+# The ephemeral target mount means the binary is cp'd out to /app for the final stage,
+# in the same RUN so the mount is still present.
 COPY . .
 RUN --mount=type=cache,target=/app/target,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db \
     --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=secret,id=AWS_ACCESS_KEY_ID \
+    --mount=type=secret,id=AWS_SECRET_ACCESS_KEY \
+    --mount=type=secret,id=SCCACHE_BUCKET \
+    --mount=type=secret,id=SCCACHE_ENDPOINT \
+    --mount=type=secret,id=SCCACHE_REGION \
+    --mount=type=secret,id=SCCACHE_S3_KEY_PREFIX \
+    --mount=type=secret,id=SCCACHE_S3_USE_SSL \
     set -e; \
     export SCCACHE_SERVER_PORT=$(awk 'BEGIN{srand(); print int(20000+rand()*40000)}'); \
-    timeout 10 sccache --start-server; \
+    sh scripts/start-sccache-docker.sh; \
     cargo build --release; \
     cp /app/target/release/whisperer ./whisperer; \
     sccache --show-stats
