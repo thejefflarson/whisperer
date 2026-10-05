@@ -161,7 +161,10 @@ metadata:
 rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # delete is intentionally absent: election.rs only creates, gets, and patches
+    # leases. Granting delete would let any principal with access to the operator
+    # pod disrupt leader election by force-deleting the lease.
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

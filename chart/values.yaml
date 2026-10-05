@@ -52,8 +52,10 @@ drainNamespaces: []
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
-  # Automatically mount a ServiceAccount's API credentials?
-  automount: true
+  # The operator mounts its SA token via an explicit projected volume with a
+  # 30-minute expiry (deployment.yaml), so auto-mounting the long-lived default
+  # token is disabled both here and on the pod spec.
+  automount: false
   # Annotations to add to the service account
   annotations: {}
   # The name of the service account to use.
@@ -142,4 +144,8 @@ tolerations: []
 
 affinity: {}
 
+# OTLP collector endpoint. The default is loopback-only (safe). For any
+# non-loopback address the operator refuses to start unless the endpoint begins
+# with https:// or OTEL_ALLOW_PLAINTEXT_HTTP=true is set — span events and
+# metric attributes include Kubernetes secret names and namespaces.
 otelEndpoint: http://localhost:4318

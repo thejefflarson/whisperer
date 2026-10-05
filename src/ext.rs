@@ -34,6 +34,14 @@ impl SecretExt for Secret {
         // whisperer-managed keys (so a crafted source can't smuggle a stale marker
         // like a forged owner-uid) AND GitOps/tooling ownership keys (so Argo/Flux
         // don't adopt the copy as part of the source's release). Then stamp our own.
+        //
+        // Security note: this is a denylist filter — it copies all source labels
+        // and annotations EXCEPT the stripped prefixes. Any label or annotation not
+        // in the strip set propagates to every target namespace, including internal
+        // metadata the secret author did not intend to broadcast. Operators who store
+        // sensitive values in source-secret labels/annotations should be aware of
+        // this. An allowlist approach would be safer but would prevent legitimate
+        // metadata (e.g. team or environment labels) from propagating to copies.
         let strip = |m: &BTreeMap<String, String>| {
             m.iter()
                 .filter(|(k, _)| {

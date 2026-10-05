@@ -24,9 +24,15 @@ pub(crate) const OWNER_UID_LABEL: &str = "whisperer.jeffl.es/owner-uid";
 pub(crate) const ALLOW_SYNC_LABEL: &str = "whisperer.jeffl.es/allow-sync";
 
 /// Server-side-apply field manager used for every secret whisperer writes.
-/// Copies carry this manager in their `managedFields`, which (unlike the
-/// `whisper`/`name`/`namespace` labels) a tenant cannot forge — so we use it to
-/// confirm a secret is genuinely operator-managed before deleting it.
+/// Copies carry this manager in their `managedFields` as defense-in-depth.
+///
+/// **Security note**: the field manager name is *client-supplied* — any
+/// Kubernetes API client can set an arbitrary manager string. It is NOT an
+/// authorization boundary and must not be relied on as proof of operator origin.
+/// The real authorization boundaries are RBAC (confining writes to
+/// `writeNamespaces`/`drainNamespaces`) and the owner-UID attribution check in
+/// `is_owned_copy`. The field manager is checked only as a cheap secondary
+/// filter, never as the primary security gate.
 pub(crate) const FIELD_MANAGER: &str = "whisperer.jeffl.es";
 
 /// Prefix for every label/annotation whisperer manages. Copies strip any

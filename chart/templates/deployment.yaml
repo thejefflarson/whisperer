@@ -28,6 +28,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "..serviceAccountName" . }}
+      # Disable auto-mounting the default long-lived SA token; use a projected
+      # token (below) with a shorter expiry and explicit audience instead.
+      automountServiceAccountToken: false
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -56,10 +59,14 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.volumeMounts }}
           volumeMounts:
+            # Projected token — must match the volume name below.
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           env:
             - name: HEALTHCHECK_PORT
               value: {{ .Values.service.port | quote }}
@@ -90,10 +97,30 @@ spec:
             - name: DRAIN_NAMESPACES
               value: {{ join "," . | quote }}
             {{- end }}
-      {{- with .Values.volumes }}
       volumes:
+        # Projected ServiceAccount token: audience-scoped to the kube-apiserver
+        # and expiring every 30 minutes (vs. the 1-hour default auto-mounted
+        # token). kubelet rotates it automatically before expiry.
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1800
+                  audience: "kubernetes.default.svc"
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
+        {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
