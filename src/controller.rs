@@ -342,10 +342,23 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
     // write namespaces actually finds. Status is the fast path; the probe makes
     // it self-healing — if status was lost, orphans are still found (and so
     // reclaimed below) without any cluster-wide secret list. See ADR 0003.
+    // Sanitize the status record against the configured probe set before building
+    // the synced set. A stale or tampered status.syncedNamespaces entry that names
+    // a namespace outside writeNamespaces/drainNamespaces would cause a
+    // RBAC-rejected delete that leaks namespace-existence information (404 vs 403).
+    // When probe_ns is empty (unconfigured), all recorded entries are kept so
+    // behaviour is unchanged for local/dev deployments.
+    let probe_ns: NSSet = ctx.probe_namespaces().cloned().collect();
     let recorded = whisper
         .status
         .as_ref()
-        .map(|s| s.synced_namespaces.iter().cloned().collect::<NSSet>())
+        .map(|s| {
+            s.synced_namespaces
+                .iter()
+                .filter(|ns| probe_ns.is_empty() || probe_ns.contains(*ns))
+                .cloned()
+                .collect::<NSSet>()
+        })
         .unwrap_or_default();
     let discovered = discover_copies(&copy_name, &owner_uid, &ctx).await?;
     let synced = recorded.union(&discovered).cloned().collect::<NSSet>();
@@ -392,15 +405,23 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
         // overwrite it. Otherwise the server-side apply would stamp our ownership
         // markers onto someone else's secret (clobbering its data and letting a
         // later cleanup delete it). Skip with a warning rather than churn.
-        if let Some(existing) = api.get_opt(&copy_name).await.map_err(Error::GetSecret)?
-            && !is_owned_copy(&existing, &owner_uid)
-        {
-            warn!(
-                "refusing to sync '{copy_name}' into '{ns}': a secret of that name already exists there and is not a whisperer copy"
-            );
-            continue;
-        }
-        let copy = secret.dup(&copy_name, &owner_uid, &namespace, ns.clone());
+        //
+        // When the existing secret IS our copy, carry its resourceVersion into the
+        // SSA patch. If the secret is swapped or recreated between this get and the
+        // apply, the API server rejects (HTTP 409) instead of silently overwriting
+        // the substituted object — closing the TOCTOU race on the write path.
+        let existing_rv = match api.get_opt(&copy_name).await.map_err(Error::GetSecret)? {
+            Some(existing) if !is_owned_copy(&existing, &owner_uid) => {
+                warn!(
+                    "refusing to sync '{copy_name}' into '{ns}': a secret of that name already exists there and is not a whisperer copy"
+                );
+                continue;
+            }
+            Some(existing) => existing.resource_version(),
+            None => None,
+        };
+        let mut copy = secret.dup(&copy_name, &owner_uid, &namespace, ns.clone());
+        copy.metadata.resource_version = existing_rv;
         let res = api
             .patch(
                 &copy_name,
@@ -516,10 +537,19 @@ async fn cleanup(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action> {
     }
     let copy_name = whisper.name_any();
     let owner_uid = whisper.uid().unwrap_or_default();
+    // Sanitize status.syncedNamespaces through the probe set (same guard as in
+    // apply) to avoid RBAC-rejected deletes leaking namespace-existence info.
+    let probe_ns: NSSet = ctx.probe_namespaces().cloned().collect();
     let mut copies = whisper
         .status
         .as_ref()
-        .map(|s| s.synced_namespaces.iter().cloned().collect::<NSSet>())
+        .map(|s| {
+            s.synced_namespaces
+                .iter()
+                .filter(|ns| probe_ns.is_empty() || probe_ns.contains(*ns))
+                .cloned()
+                .collect::<NSSet>()
+        })
         .unwrap_or_default();
     copies.extend(whisper.spec.namespaces.iter().cloned());
     copies.extend(discover_copies(&copy_name, &owner_uid, &ctx).await?);
@@ -572,7 +602,9 @@ async fn dispatcher(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action> 
 }
 
 fn error(_object: Arc<Whisper>, error: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = ?error, "Requeueing after error");
+    // Use Display (%error) not Debug (?error): the Debug format of kube::Error
+    // can include full HTTP response bodies which may contain secret metadata.
+    warn!(error = %error, "Requeueing after error");
     // Jittered backoff (5–15s) so a batch of failing Whispers — which any tenant
     // can create — doesn't requeue in lockstep and hammer the API server every
     // second. (kube's error policy gives no per-object failure count, so this is a
@@ -617,6 +649,14 @@ pub async fn run(metrics: MetricState) {
         panic!(
             "WRITE_NAMESPACES and DRAIN_NAMESPACES must be disjoint; overlapping: {}",
             overlap.join(", ")
+        );
+    }
+    if write_namespaces.is_empty() {
+        warn!(
+            "WRITE_NAMESPACES is not configured: the operator will sync into any \
+             consenting namespace without RBAC confinement. Set writeNamespaces in \
+             your Helm values (or WRITE_NAMESPACES env var) to confine the operator \
+             to specific namespaces and enable orphan recovery."
         );
     }
     info!("write namespaces: {write_namespaces:?}; draining: {drain_namespaces:?}");

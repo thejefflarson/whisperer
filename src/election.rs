@@ -374,8 +374,25 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
         }
         // we're shutting down, cleanup our lease
         if let State::Leading = state {
+            // Fetch the current resourceVersion and include it in the patch as an
+            // optimistic-lock precondition. If another replica has acquired the
+            // lease between our last renewal and this shutdown, the API server
+            // rejects (HTTP 409) rather than overwriting the new leader's duration
+            // with 1 s, which would trigger a spurious re-election. Errors from
+            // this get are swallowed — the patch is best-effort on shutdown.
+            let resource_version = api
+                .get_opt(LOCK_NAME)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|l| l.metadata.resource_version);
             let pp = PatchParams::default();
             let patch = Patch::Apply(Lease {
+                metadata: ObjectMeta {
+                    name: Some(LOCK_NAME.to_string()),
+                    resource_version,
+                    ..Default::default()
+                },
                 spec: Some(LeaseSpec {
                     lease_duration_seconds: Some(1),
                     ..Default::default()

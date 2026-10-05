@@ -32,7 +32,9 @@ pub struct WhisperSpec {
     /// `whisperer.jeffl.es/allow-sync=true`; protected and unknown namespaces
     /// are skipped (and logged). Bounded so a single Whisper can't inflate
     /// per-reconcile work without limit (the API server rejects oversized specs).
-    #[schemars(length(max = 256))]
+    /// Items must be valid DNS labels (lowercase alphanumeric + hyphens, 1–63
+    /// chars); duplicates are rejected by the API server.
+    #[schemars(length(max = 256), extend("uniqueItems" = true))]
     pub namespaces: Vec<String>,
 }
 

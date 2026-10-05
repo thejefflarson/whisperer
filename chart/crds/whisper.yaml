@@ -22,7 +22,15 @@ spec:
     name: v1
     schema:
       openAPIV3Schema:
-        description: Auto-generated derived type for WhisperSpec via `CustomResource`
+        description: |-
+          Auto-generated derived type for WhisperSpec via `CustomResource`.
+
+          Security note: there is currently no admission webhook verifying that the
+          Whisper creator has `get` access on the named source secret. Any principal
+          who can create a Whisper in a namespace can request replication of any
+          secret in that namespace, relying solely on the operator's read RBAC to
+          enforce access. A ValidatingWebhookConfiguration that impersonates the
+          creator and attempts a `get` on the named secret would close this gap.
         properties:
           spec:
             description: |-
@@ -46,7 +54,9 @@ spec:
                   per-reconcile work without limit (the API server rejects oversized specs).
                 items:
                   type: string
+                  pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'
                 maxItems: 256
+                uniqueItems: true
                 type: array
               secretName:
                 description: Name of the Secret in this (the Whisper's own) namespace to replicate.
