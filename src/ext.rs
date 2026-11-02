@@ -5,17 +5,40 @@ use kube::{ResourceExt, api::ObjectMeta};
 
 use crate::labels::*;
 
-/// GitOps/tooling label & annotation prefixes that identify which chart/app owns
-/// a resource. If a copy carries these (inherited from the source), Argo CD / Flux
-/// adopt the copy as part of the *source's* release — flagging it out-of-sync and,
-/// if it shares the owning app's namespace, pruning it out from under the operator.
-/// A whispered copy must be owned only by whisperer, so these are stripped.
+/// Label and annotation prefixes that must never propagate from a source secret
+/// to its copies in other namespaces.
+///
+/// Two categories are stripped:
+///
+/// 1. **GitOps / tooling ownership** — labels like `argocd.argoproj.io/instance`
+///    tell Argo CD / Flux the copy belongs to the *source's* release: it flags it
+///    out-of-sync and, if the owning app shares the target namespace, prunes it out
+///    from under the operator.
+///
+/// 2. **Security-sensitive controller triggers** — labels consumed by Istio,
+///    Kyverno, Vault Agent, and similar controllers can cause unintended side-effects
+///    when they appear on secrets in *other* namespaces (e.g. sidecar injection,
+///    policy application, secret-store mounting). A single source-secret edit
+///    would otherwise spread these labels cluster-wide across every copy.
 const TOOLING_PREFIXES: &[&str] = &[
+    // GitOps / tooling ownership — must not adopt copies into the source's release.
     "app.kubernetes.io/",
     "helm.sh/",
     "argocd.argoproj.io/",
     "kustomize.toolkit.fluxcd.io/",
     "kubectl.kubernetes.io/",
+    // Service mesh — propagating these to target copies could trigger unintended
+    // Istio sidecar injection or traffic-policy changes in the target namespace.
+    "istio.io/",
+    "sidecar.istio.io/",
+    // Policy engine — prevent copies from being treated as Kyverno policy subjects
+    // or having per-namespace policies applied against them inadvertently.
+    "kyverno.io/",
+    "policies.kyverno.io/",
+    // Secret injection — block Vault Agent injection or the CSI secrets-store
+    // driver from activating on copies in namespaces that didn't request it.
+    "vault.hashicorp.com/",
+    "secrets-store.csi.x-k8s.io/",
 ];
 
 pub(crate) trait SecretExt {

@@ -234,15 +234,20 @@ async fn resolve(
 
     let resolution = resolve_targets(wanted, &all.items);
     if !resolution.unknown.is_empty() {
+        // Use the structured field form so untrusted Whisper-supplied namespace
+        // strings are passed to the logger as a typed value rather than
+        // interpolated directly into the message (prevents format-string-style
+        // log injection via crafted namespace names).
         warn!(
-            "requested namespaces '{}' do not exist",
-            resolution.unknown.join(",")
+            namespaces = ?resolution.unknown,
+            "requested namespaces do not exist"
         );
     }
     if !resolution.refused.is_empty() {
         warn!(
-            "requested namespaces '{}' have not opted in via {ALLOW_SYNC_LABEL}=true; refusing to sync there",
-            resolution.refused.join(",")
+            namespaces = ?resolution.refused,
+            label = ALLOW_SYNC_LABEL,
+            "requested namespaces have not opted in; refusing to sync there"
         );
     }
 
@@ -314,7 +319,13 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
     // tagged with its UID so we can always find and attribute them.
     let copy_name = whisper.name_any();
     let owner_uid = whisper.uid().unwrap_or_default();
-    info!("reconciling whisper {copy_name} in {namespace} (source secret {secret_name})");
+    // Log the source secret name at debug level only: at info level it would be
+    // emitted to OTLP spans and any log aggregator, exposing the full sync topology
+    // (which secret is being replicated from which namespace) to anyone who can read
+    // those streams. The whisper name and namespace are sufficient for operational
+    // correlation.
+    info!("reconciling whisper {copy_name} in {namespace}");
+    tracing::debug!(secret_name = %secret_name, "source secret for reconcile");
 
     // The source secret lives in this Whisper's own namespace.
     let src: Api<Secret> = Api::namespaced(client.clone(), &namespace);
@@ -367,13 +378,23 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
     // know them from status plus the probe, so we delete by name in those
     // specific namespaces (verifying origin) — never a cluster-wide secret list.
     for ns in &to_delete {
+        // Re-check leadership before every delete: the lease can be lost at any
+        // await point and a single snapshot before the loop is not enough.
+        if !ctx.state.is_leader() {
+            info!("lost leadership mid-cleanup; deferring reconcile of '{copy_name}'");
+            return Ok(Action::requeue(Duration::from_secs(5)));
+        }
         info!("reclaiming '{copy_name}' from '{ns}' (no longer a target)");
         delete_copy(copy_name.clone(), &owner_uid, ns.clone(), ctx.clone()).await?;
         ctx.record(
             &Notice {
                 type_: EventType::Normal,
                 reason: "Delete Requested".into(),
-                note: Some(format!("Reclaiming '{copy_name}' from '{ns}'")),
+                // Omit the target namespace from the event note: Events are
+                // readable by any principal with event-read in the source
+                // namespace, so including '{ns}' would expose the full sync
+                // topology (which namespaces hold copies of this secret).
+                note: Some(format!("Reclaiming copy of '{copy_name}'")),
                 action: "Delete".into(),
                 secondary: None,
             },
@@ -386,6 +407,12 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
     // copy is named after the Whisper, so a secretName rename refreshes it in
     // place rather than leaving an old-named orphan.
     for ns in &to_write {
+        // Re-check leadership before every write: the lease can be lost at any
+        // await point and a single snapshot before the loop is not enough.
+        if !ctx.state.is_leader() {
+            info!("lost leadership mid-sync; deferring reconcile of '{copy_name}'");
+            return Ok(Action::requeue(Duration::from_secs(5)));
+        }
         let api: Api<Secret> = Api::namespaced(client.clone(), ns);
         // Never adopt a pre-existing secret we didn't create: if an object of this
         // name already exists in the target and isn't one of our copies, refuse to
@@ -413,7 +440,10 @@ async fn apply(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action, Error
             &Notice {
                 type_: EventType::Normal,
                 reason: "Sync Requested".into(),
-                note: Some(format!("Synced '{copy_name}' from '{namespace}' to '{ns}'")),
+                // Omit target namespace from the event note (same reason as the
+                // delete event above — Events are readable by source-namespace
+                // readers, so including the destination would expose topology).
+                note: Some(format!("Synced copy of '{copy_name}' from '{namespace}'")),
                 action: "Sync".into(),
                 secondary: Some(res.object_ref(&())),
             },
@@ -523,12 +553,14 @@ async fn cleanup(whisper: Arc<Whisper>, ctx: Arc<Context>) -> Result<Action> {
         .unwrap_or_default();
     copies.extend(whisper.spec.namespaces.iter().cloned());
     copies.extend(discover_copies(&copy_name, &owner_uid, &ctx).await?);
-    let namespaces = copies.iter().cloned().collect::<Vec<_>>().join(", ");
     ctx.record(
         &Notice {
             type_: EventType::Normal,
             reason: "Delete Requested".into(),
-            note: Some(format!("Reclaiming '{copy_name}' from {namespaces}")),
+            // Omit the list of target namespaces: Events are readable by any
+            // principal with event-read in the source namespace, so enumerating
+            // every copy location here would expose the full sync topology.
+            note: Some(format!("Reclaiming all copies of '{copy_name}'")),
             action: "Delete".into(),
             secondary: None,
         },
@@ -580,13 +612,36 @@ fn error(_object: Arc<Whisper>, error: &Error, _ctx: Arc<Context>) -> Action {
     Action::requeue(Duration::from_secs(5 + rand::random::<u64>() % 11))
 }
 
-/// Parse a comma-separated namespace list (the `WRITE_NAMESPACES` env var) into a
-/// set, ignoring blanks and surrounding whitespace.
+/// True when `s` is a valid RFC 1123 DNS label (the format Kubernetes uses for
+/// namespace names): lowercase alphanumeric plus hyphens, 1–63 chars, start and
+/// end with an alphanumeric character.
+fn is_valid_dns_label(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && s.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+/// Parse a comma-separated namespace list (the `WRITE_NAMESPACES` /
+/// `DRAIN_NAMESPACES` env vars) into a set, ignoring blanks and surrounding
+/// whitespace. Panics on startup if any entry is not a valid RFC 1123 DNS label
+/// so misconfigured values produce a clear error rather than silent orphan-
+/// recovery failures at reconcile time.
 fn parse_namespaces(raw: &str) -> NSSet {
     raw.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(String::from)
+        .map(|s| {
+            if !is_valid_dns_label(s) {
+                panic!(
+                    "invalid namespace name {s:?} in env var — must be a lowercase \
+                     RFC 1123 DNS label (alphanumeric + hyphens, ≤ 63 chars, \
+                     start/end with alphanumeric)"
+                );
+            }
+            String::from(s)
+        })
         .collect()
 }
 
@@ -638,10 +693,14 @@ pub async fn run(metrics: MetricState) {
             instance: env::var("CONTROLLER_POD_NAME").ok(),
         },
     );
-    // Cap how many Whispers reconcile at once so a flood of tenant-created
-    // Whispers can't drive unbounded concurrent API work against the cluster.
+    // Cap how many Whispers reconcile concurrently. 4 is enough for typical
+    // throughput while halving the number of slots a single tenant with slow
+    // Whispers can monopolise compared with 8 — each reconcile drives
+    // O(writeNamespaces) API probes, so lower concurrency bounds API pressure.
+    // True per-tenant fairness would require a per-namespace rate limiter, which
+    // is a larger architectural change; this is a pragmatic guard.
     let controller = Controller::new(whispers, Config::default())
-        .with_config(ControllerConfig::default().concurrency(8));
+        .with_config(ControllerConfig::default().concurrency(4));
     let store = controller.store();
     controller
         .watches(secrets, Config::default(), move |secret| {

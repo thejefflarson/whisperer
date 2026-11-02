@@ -28,6 +28,36 @@ fn service_name_set_in_env() -> bool {
             .unwrap_or(false)
 }
 
+/// True when `endpoint` resolves to a loopback address.
+///
+/// Uses exact host extraction rather than a substring search, which would
+/// allow bypass via hostnames like `evil-localhost.attacker.com` (contains
+/// "localhost") or omitting the IPv6 loopback `::1`. The host is extracted
+/// by stripping the scheme and dropping the port/path, then compared to the
+/// exact set of loopback names. IPv6 bracket notation `[::1]` is handled.
+fn is_loopback_endpoint(endpoint: &str) -> bool {
+    // Strip scheme (e.g. "http://") to isolate the authority component.
+    let after_scheme = endpoint
+        .find("://")
+        .map(|i| &endpoint[i + 3..])
+        .unwrap_or(endpoint);
+    // Drop any path component that follows the host[:port].
+    let host_port = after_scheme.split('/').next().unwrap_or("");
+    // Extract just the host, handling IPv6 bracket notation.
+    let host = if host_port.starts_with('[') {
+        // e.g. "[::1]" or "[::1]:4318" — keep the brackets so the match below
+        // is unambiguous.
+        host_port
+            .find(']')
+            .map(|i| &host_port[..=i])
+            .unwrap_or(host_port)
+    } else {
+        // Plain hostname or IPv4 — drop the port.
+        host_port.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
+}
+
 // Telemetry setup follows the patterns from:
 // - https://github.com/kube-rs/controller-rs/blob/main/src/telemetry.rs
 // - https://github.com/open-telemetry/opentelemetry-rust/blob/main/opentelemetry-otlp/examples/basic-otlp/src/main.rs
@@ -98,10 +128,7 @@ pub fn init() -> Result<Telemetry> {
     // attributes include Kubernetes secret names and namespace values.
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:4318".to_string());
-    if !otlp_endpoint.starts_with("https://")
-        && !otlp_endpoint.contains("localhost")
-        && !otlp_endpoint.contains("127.0.0.1")
-    {
+    if !otlp_endpoint.starts_with("https://") && !is_loopback_endpoint(&otlp_endpoint) {
         tracing::warn!(
             endpoint = %otlp_endpoint,
             "OTLP endpoint uses plaintext HTTP; metric attributes contain \

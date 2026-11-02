@@ -59,6 +59,12 @@ metadata:
   labels:
     {{- include "..labels" . | nindent 4 }}
 rules:
+  # `list` and `watch` are required here: controller.rs registers a source-secret
+  # watch (`.watches(secrets, ...)`) so that a changed source triggers re-reconcile
+  # of every Whisper that references it.  Removing them would break that watch.
+  # Accepted risk: a compromised operator process could enumerate all secrets in
+  # this namespace.  Mitigation: the operator namespace must not be a multi-tenant
+  # namespace; restrict who can create objects there via admission policy.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch"]

@@ -374,18 +374,34 @@ pub(crate) async fn start(client: Client) -> (LeaderState, LeaderLock) {
         }
         // we're shutting down, cleanup our lease
         if let State::Leading = state {
-            let pp = PatchParams::default();
-            let patch = Patch::Apply(Lease {
-                spec: Some(LeaseSpec {
-                    lease_duration_seconds: Some(1),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
-            let _ = api
-                .patch(LOCK_NAME, &pp, &patch)
+            // Only shorten the lease duration if we still hold the lease. Without
+            // this guard, a replica that lost leadership during the shutdown window
+            // (cancel_rx fired after the lease was taken by another replica) would
+            // unconditionally overwrite the new leader's lease_duration_seconds to 1s,
+            // triggering a spurious failover on the healthy leader.
+            let still_ours = api
+                .get_opt(LOCK_NAME)
                 .await
-                .map_err(Error::Patch)?;
+                .ok()
+                .flatten()
+                .and_then(|l| l.spec)
+                .and_then(|s| s.holder_identity)
+                .map(|h| h == identity())
+                .unwrap_or(false);
+            if still_ours {
+                let pp = PatchParams::default();
+                let patch = Patch::Apply(Lease {
+                    spec: Some(LeaseSpec {
+                        lease_duration_seconds: Some(1),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                let _ = api
+                    .patch(LOCK_NAME, &pp, &patch)
+                    .await
+                    .map_err(Error::Patch)?;
+            }
             state_tx
                 .send(State::Standby)
                 .map_err(|_| Error::ChannelSend)?;
