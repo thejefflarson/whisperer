@@ -20,11 +20,13 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v2.4.0
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
-      # `gh pr merge --auto` only completes once the branch's required status
-      # checks pass, so the `rust` / `cargo audit` job must be marked required in
-      # branch protection for this to act as a real CI gate. We restrict auto
+      # `gh pr merge --auto` only completes once main's required status checks
+      # (Lint / Build / Integration) pass, so those are the real CI gate — see
+      # main's branch protection. No approval is needed: main requires passing
+      # checks, not reviews, which is why this job does not (and cannot, without
+      # enabling Actions self-approval) call `gh pr review`. We restrict auto
       # handling to patch and minor bumps; majors require a human.
-      - name: Approve and enable auto-merge
+      - name: Enable auto-merge
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
@@ -33,5 +35,4 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           set -euo pipefail
-          gh pr review --approve "$PR_URL"
           gh pr merge --auto --squash "$PR_URL"

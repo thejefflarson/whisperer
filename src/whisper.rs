@@ -1,5 +1,5 @@
 use kube::CustomResource;
-use schemars::{JsonSchema, SchemaGenerator, Schema};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 /// A request to replicate one Secret from this namespace into others.
@@ -24,6 +24,24 @@ use serde::{Deserialize, Serialize};
     printcolumn = r#"{"name":"Secret","type":"string","jsonPath":".spec.secretName"}"#,
     printcolumn = r#"{"name":"Targets","type":"string","jsonPath":".spec.namespaces"}"#
 )]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperSpec {
+    /// Name of the Secret in this (the Whisper's own) namespace to replicate.
+    /// Must be a valid Kubernetes DNS subdomain name (RFC 1123): lowercase
+    /// alphanumeric, hyphens, and dots; ≤ 253 chars; start/end alphanumeric.
+    /// Validated at the API server by the CRD schema so invalid names are
+    /// rejected at admission rather than discovered on every reconcile.
+    #[schemars(
+        length(max = 253),
+        pattern("^[a-z0-9][a-z0-9\\.\\-]*[a-z0-9]$|^[a-z0-9]$")
+    )]
+    pub secret_name: String,
+    /// Namespaces to replicate the secret into. See [`namespaces_schema`] for
+    /// CRD-level per-item format constraints.
+    #[schemars(schema_with = "namespaces_schema")]
+    pub namespaces: Vec<String>,
+}
+
 /// JSON Schema for `spec.namespaces` that enforces both a max-items bound
 /// and per-item RFC 1123 DNS label format. Using `schema_with` instead of a
 /// field-level `schemars` attribute because schemars cannot add per-item
@@ -33,7 +51,7 @@ fn namespaces_schema(_: &mut SchemaGenerator) -> Schema {
     // lowercase alphanumeric or hyphen, start/end with alphanumeric, ≤ 63 chars.
     // maxItems is kept low (32) so a single Whisper cannot drive O(32 ×
     // |writeNamespaces|) API probes per reconcile and overload the API server.
-    Schema::from(serde_json::json!({
+    schemars::json_schema!({
         "type": "array",
         "items": {
             "type": "string",
@@ -45,25 +63,7 @@ fn namespaces_schema(_: &mut SchemaGenerator) -> Schema {
             with whisperer.jeffl.es/allow-sync=true; protected and unknown namespaces \
             are skipped. Capped at 32 entries so a single Whisper cannot inflate \
             per-reconcile API work without limit."
-    }))
-}
-
-#[serde(rename_all = "camelCase")]
-pub struct WhisperSpec {
-    /// Name of the Secret in this (the Whisper's own) namespace to replicate.
-    /// Must be a valid Kubernetes DNS subdomain name (RFC 1123): lowercase
-    /// alphanumeric, hyphens, and dots; ≤ 253 chars; start/end alphanumeric.
-    /// Validated at the API server by the CRD schema so invalid names are
-    /// rejected at admission rather than discovered on every reconcile.
-    #[schemars(
-        length(max = 253),
-        pattern = "^[a-z0-9][a-z0-9\\.\\-]*[a-z0-9]$|^[a-z0-9]$"
-    )]
-    pub secret_name: String,
-    /// Namespaces to replicate the secret into. See [`namespaces_schema`] for
-    /// CRD-level per-item format constraints.
-    #[schemars(schema_with = "namespaces_schema")]
-    pub namespaces: Vec<String>,
+    })
 }
 
 /// Operator-maintained record of where copies currently live. Orphans are

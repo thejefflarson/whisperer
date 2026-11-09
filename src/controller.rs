@@ -618,7 +618,8 @@ fn error(_object: Arc<Whisper>, error: &Error, _ctx: Arc<Context>) -> Action {
 fn is_valid_dns_label(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 63
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && s.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
         && s.ends_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
 }

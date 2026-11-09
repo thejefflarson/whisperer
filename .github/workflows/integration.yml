@@ -18,7 +18,21 @@ jobs:
       - name: Install k3d
         # Fetch the installer from the pinned tag (not the mutable `main` branch),
         # so the script we pipe to bash is immutable along with the version it installs.
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/v5.8.3/install.sh | TAG=v5.8.3 bash
+        # Both this fetch and the binary download inside the installer hit GitHub's
+        # raw/release CDNs, which intermittently 5xx (seen: a 504 that failed the whole
+        # job), so retry with backoff. `-f` makes an HTTP error fail the attempt instead
+        # of piping an error page to bash; pipefail propagates that out of the pipe.
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/v5.8.3/install.sh | TAG=v5.8.3 bash; then
+              exit 0
+            fi
+            echo "::warning::k3d install attempt ${attempt} failed; retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
+          done
+          echo "::error::k3d install failed after 5 attempts"
+          exit 1
       - name: Run integration tests against k3d
         run: scripts/integration-test.sh
         env:

@@ -40,16 +40,23 @@ spec:
             properties:
               namespaces:
                 description: |-
-                  Namespaces to replicate the secret into. Each must opt in with
-                  `whisperer.jeffl.es/allow-sync=true`; protected and unknown namespaces
-                  are skipped (and logged). Bounded so a single Whisper can't inflate
-                  per-reconcile work without limit (the API server rejects oversized specs).
+                  Namespaces to replicate the secret into. See [`namespaces_schema`] for
+                  CRD-level per-item format constraints.
                 items:
+                  maxLength: 63
+                  pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                   type: string
-                maxItems: 256
+                maxItems: 32
                 type: array
               secretName:
-                description: Name of the Secret in this (the Whisper's own) namespace to replicate.
+                description: |-
+                  Name of the Secret in this (the Whisper's own) namespace to replicate.
+                  Must be a valid Kubernetes DNS subdomain name (RFC 1123): lowercase
+                  alphanumeric, hyphens, and dots; ≤ 253 chars; start/end alphanumeric.
+                  Validated at the API server by the CRD schema so invalid names are
+                  rejected at admission rather than discovered on every reconcile.
+                maxLength: 253
+                pattern: ^[a-z0-9][a-z0-9\.\-]*[a-z0-9]$|^[a-z0-9]$
                 type: string
             required:
             - namespaces
